@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "newsbot"
+version = "0.1.0"
+description = "Event-driven News- und Politik-Trading-Bot (Zinsen, Zoelle, Reden, Krypto-Regulierung)"
+requires-python = ">=3.10"
+dependencies = []
+
+# Der Kern laeuft bewusst nur mit der Standardbibliothek, damit Replay/Backtest
+# und Paper-Trading ohne Installation zusaetzlicher Pakete funktionieren.
+[project.optional-dependencies]
+live = ["aiohttp>=3.9", "feedparser>=6.0", "pyyaml>=6.0", "websockets>=12.0"]
+llm = ["anthropic>=0.40"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "pyyaml>=6.0"]
+
+[project.scripts]
+newsbot = "newsbot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

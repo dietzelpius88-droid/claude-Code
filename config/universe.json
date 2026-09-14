@@ -1,0 +1,14 @@
+{
+  "_hinweis": "Ueberschreibt einzelne Felder des Standarduniversums aus src/newsbot/strategy/universe.py. Nur angegebene Felder werden ersetzt; 'betas' wird zusammengefuehrt. Betas gehoeren regelmaessig nachkalibriert - siehe docs/05_BETRIEB.md, Abschnitt Kalibrierung.",
+
+  "assets": [
+    {
+      "symbol": "HYPE",
+      "_kommentar": "Beispiel: Nach einer Ereignisstudie angepasstes Beta und aktuelle Marktdaten.",
+      "adv_usd": 350000000,
+      "typical_spread_bps": 6.0,
+      "daily_vol_bps": 780,
+      "betas": {"crypto_policy": 2.40}
+    }
+  ]
+}

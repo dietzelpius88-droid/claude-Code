@@ -1,0 +1,100 @@
+{
+  "_hinweis": "Latenzklasse: A = Sekundenbruchteile (kommerziell/direkt), B = 1-15 s, C = 15-120 s, D = langsamer. tier 1-5 = Vertrauensstufe (siehe models.SourceTier).",
+
+  "geldpolitik": [
+    {"id": "fed_press_all",   "type": "rss",  "tier": 1, "latency": "C", "poll_s": 2,
+     "url": "https://www.federalreserve.gov/feeds/press_all.xml",
+     "note": "Alle Fed-Pressemitteilungen"},
+    {"id": "fed_monetary",    "type": "rss",  "tier": 1, "latency": "C", "poll_s": 1,
+     "url": "https://www.federalreserve.gov/feeds/press_monetary.xml",
+     "note": "FOMC-Beschluesse - der wichtigste Einzelfeed ueberhaupt"},
+    {"id": "fed_speeches",    "type": "rss",  "tier": 1, "latency": "C", "poll_s": 5,
+     "url": "https://www.federalreserve.gov/feeds/speeches.xml"},
+    {"id": "ecb_press",       "type": "rss",  "tier": 1, "latency": "C", "poll_s": 3,
+     "url": "https://www.ecb.europa.eu/rss/press.html"},
+    {"id": "boe_news",        "type": "rss",  "tier": 1, "latency": "C", "poll_s": 10,
+     "url": "https://www.bankofengland.co.uk/boeapps/rss/feeds.aspx?feed=News"},
+    {"id": "fomc_statement_direct", "type": "poll_html", "tier": 1, "latency": "A", "poll_s": 0.5,
+     "url": "https://www.federalreserve.gov/newsevents/pressreleases/monetary{YYYYMMDD}a.htm",
+     "note": "Direktabfrage der erwarteten Beschluss-URL ab wenigen Sekunden vor dem Termin. Schnellster oeffentlicher Weg."}
+  ],
+
+  "handel_und_zoelle": [
+    {"id": "federal_register_presdocu", "type": "json", "tier": 1, "latency": "C", "poll_s": 30,
+     "url": "https://www.federalregister.gov/api/v1/documents.json?per_page=20&order=newest&conditions[type][]=PRESDOCU",
+     "note": "Executive Orders und Proclamations - amtlicher Kanal fuer Zoelle und Sanktionen"},
+    {"id": "whitehouse_actions", "type": "rss", "tier": 1, "latency": "C", "poll_s": 5,
+     "url": "https://www.whitehouse.gov/presidential-actions/feed/"},
+    {"id": "ustr_press",  "type": "rss", "tier": 1, "latency": "D", "poll_s": 30,
+     "url": "https://ustr.gov/rss.xml", "note": "US-Handelsbeauftragter, Section 301/232"},
+    {"id": "treasury_press", "type": "rss", "tier": 1, "latency": "C", "poll_s": 10,
+     "url": "https://home.treasury.gov/news/press-releases/feed",
+     "note": "Sanktionen (OFAC), Schuldenobergrenze, Waehrungsberichte"},
+    {"id": "ec_trade", "type": "rss", "tier": 1, "latency": "D", "poll_s": 60,
+     "url": "https://policy.trade.ec.europa.eu/node/2/rss_en", "note": "EU-Gegenmassnahmen"}
+  ],
+
+  "konjunkturdaten": [
+    {"id": "bls_news", "type": "rss", "tier": 1, "latency": "C", "poll_s": 2,
+     "url": "https://www.bls.gov/feed/bls_latest.rss", "note": "CPI, NFP, PPI"},
+    {"id": "bea_news", "type": "rss", "tier": 1, "latency": "C", "poll_s": 10,
+     "url": "https://apps.bea.gov/rss/rss.xml", "note": "BIP, PCE"},
+    {"id": "census_econ", "type": "rss", "tier": 1, "latency": "D", "poll_s": 30,
+     "url": "https://www.census.gov/economic-indicators/indicator.xml"},
+    {"id": "destatis", "type": "rss", "tier": 1, "latency": "D", "poll_s": 60,
+     "url": "https://www.destatis.de/DE/Service/RSS/rss-pressemitteilungen.xml"}
+  ],
+
+  "krypto_regulierung": [
+    {"id": "sec_press", "type": "rss", "tier": 1, "latency": "C", "poll_s": 5,
+     "url": "https://www.sec.gov/news/pressreleases.rss"},
+    {"id": "sec_litigation", "type": "rss", "tier": 1, "latency": "C", "poll_s": 10,
+     "url": "https://www.sec.gov/rss/litigation/litreleases.xml"},
+    {"id": "cftc_press", "type": "rss", "tier": 1, "latency": "C", "poll_s": 10,
+     "url": "https://www.cftc.gov/RSS/RSSGP/rssgp.xml"},
+    {"id": "coindesk", "type": "rss", "tier": 3, "latency": "C", "poll_s": 5,
+     "url": "https://www.coindesk.com/arc/outboundfeeds/rss/"},
+    {"id": "theblock", "type": "rss", "tier": 3, "latency": "C", "poll_s": 5,
+     "url": "https://www.theblock.co/rss.xml"},
+    {"id": "cointelegraph", "type": "rss", "tier": 4, "latency": "C", "poll_s": 5,
+     "url": "https://cointelegraph.com/rss"}
+  ],
+
+  "energie_und_geopolitik": [
+    {"id": "eia_today", "type": "rss", "tier": 1, "latency": "D", "poll_s": 60,
+     "url": "https://www.eia.gov/rss/todayinenergy.xml"},
+    {"id": "opec_press", "type": "rss", "tier": 1, "latency": "D", "poll_s": 60,
+     "url": "https://www.opec.org/opec_web/en/publications/rss.xml"},
+    {"id": "state_dept", "type": "rss", "tier": 1, "latency": "D", "poll_s": 60,
+     "url": "https://www.state.gov/rss-feed/press-releases/feed/"},
+    {"id": "nato_news", "type": "rss", "tier": 1, "latency": "D", "poll_s": 60,
+     "url": "https://www.nato.int/cps/en/natohq/news.rss"}
+  ],
+
+  "soziale_originalquellen": [
+    {"id": "social:realDonaldTrump", "type": "social", "tier": 1, "latency": "A", "poll_s": 1.5,
+     "note": "Truth Social / X. Der Originalaccount ist Primaerquelle. Nachahmer und Repost-Bots NIE."},
+    {"id": "social:WhiteHouse", "type": "social", "tier": 1, "latency": "B", "poll_s": 3},
+    {"id": "social:federalreserve", "type": "social", "tier": 1, "latency": "B", "poll_s": 3},
+    {"id": "social:SECGov", "type": "social", "tier": 1, "latency": "B", "poll_s": 5},
+    {"id": "social:DeItaone", "type": "social", "tier": 4, "latency": "A", "poll_s": 1,
+     "note": "Sehr schnell, aber unredigiert - nur mit Zweitbestaetigung handelbar"}
+  ],
+
+  "reden_live": [
+    {"id": "speech_potus", "type": "speech", "tier": 1, "latency": "A",
+     "note": "Live-Audio -> Spracherkennung -> Satzstrom. Groesster Vorsprung, weil der Wortlaut vor jeder Agenturmeldung vorliegt."},
+    {"id": "speech_fed_presser", "type": "speech", "tier": 1, "latency": "A",
+     "note": "FOMC-Pressekonferenz, 30 Minuten nach dem Beschluss - haeufig groessere Bewegung als der Beschluss selbst"},
+    {"id": "speech_congress", "type": "speech", "tier": 2, "latency": "A",
+     "note": "Anhoerungen zu Regulierung und Haushalt"}
+  ],
+
+  "kommerziell_niedriglatenz": [
+    {"id": "dowjones_newswire", "type": "websocket", "tier": 2, "latency": "A",
+     "note": "Kostenpflichtig. Der Standard fuer ereignisgetriebenes Handeln."},
+    {"id": "bloomberg_bpipe", "type": "websocket", "tier": 2, "latency": "A", "note": "Kostenpflichtig"},
+    {"id": "reuters_lseg", "type": "websocket", "tier": 2, "latency": "A", "note": "Kostenpflichtig"},
+    {"id": "benzinga_pro", "type": "websocket", "tier": 3, "latency": "A", "note": "Guenstigster Einstieg in echte Wire-Latenz"}
+  ]
+}
