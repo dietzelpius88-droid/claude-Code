@@ -545,6 +545,8 @@ Ich rate hier bewusst nicht. Jede offene Frage mit Vorschlag, wie wir sie schlie
 | **OFFEN-11** | edgeX: Funding-Intervall? | Normalisierung unmöglich ohne diese Angabe. | dito |
 | **OFFEN-12** | edgeX: Endpunkt für echte Funding-Zahlungen? | Anforderung 6.4. | dito |
 | **OFFEN-13** | Aster: Blockiert die Einzahlungspflicht für V3 den Testnet-Durchlauf? | Phase 4 hinge daran. | Nur relevant, falls Aster gewählt wird. |
+| **OFFEN-14** | **Lighter: In welcher Einheit steht `rate` in `/api/v1/funding-rates`?** Bruch oder Prozent? | Faktor 100 im Netto-APR. Die `openapi.json` gibt für dieses Feld weder Beschreibung noch Beispiel an – anders als bei `taker_fee` (Beispiel `0.0001`, also Bruch). | Umgesetzt als Plausibilitätsprüfung: liegen die mittleren Ratenbeträge beider Börsen um mehr als Faktor 20 auseinander, warnt das Dashboard. Endgültig klärt es der erste Live-Abruf – ein Vergleich beider Börsen für dasselbe Symbol. |
+| **OFFEN-15** | **Lighter: Welcher Wert steht im Feld `exchange` für Lighter selbst?** | `/api/v1/funding-rates` liefert Einträge mit einem `exchange`-Feld, also offenbar auch Raten fremder Börsen. Eine fremde Rate als Lighter-Rate zu verbuchen wäre der teuerste denkbare Fehler. | Umgesetzt als harter Abbruch: der Adapter filtert auf `lighter`/`zklighter` und bricht mit einer Fehlermeldung ab, die alle gefundenen Kennungen nennt, statt den erstbesten Treffer zu nehmen. Der erste Live-Abruf zeigt die richtige Kennung. |
 
 Zusätzlich zwei Angaben aus deinem Anhang, die ich **weder bestätigen noch widerlegen**
 konnte und die deshalb nicht ungeprüft in Code wandern sollten:
@@ -552,6 +554,11 @@ konnte und die deshalb nicht ungeprüft in Code wandern sollten:
 * „Extended: Rate Limit ab 1000 Requests/Minute" → siehe OFFEN-5.
 * „Lighter: bis zu 256 API-Keys je Account" → im SDK nicht belegt. Für uns ohnehin
   unkritisch, aber ich führe es nicht als Tatsache.
+
+**Während der Umsetzung von Phase 1 neu aufgetaucht** sind OFFEN-14 und
+OFFEN-15. Beide betreffen Lighter und beide sind im Code abgesichert, statt
+durch eine Annahme überbrückt zu werden – die Absicherung ersetzt die Antwort
+aber nicht.
 
 Bestätigt aus deinem Anhang haben sich dagegen: sämtliche Extended-Endpunkte und
 Base-URLs, das `X-Api-Key`-Verfahren, die Stark-Signatur, der Lighter-Installationspfad
