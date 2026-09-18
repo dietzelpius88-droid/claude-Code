@@ -127,12 +127,13 @@ def lighter_details(mark_price: str = "64000.5") -> dict:
     }
 
 
-def lighter_funding_rates(rate: str = "0.0000125", exchange: str = "lighter") -> dict:
+def lighter_funding_rates(rate: str = "10.95", exchange: str = "lighter") -> dict:
+    """rate ist Prozent pro Jahr - 10,95 % p. a. entsprechen 0,00125 % pro Stunde."""
     return {
         "code": 200,
         "funding_rates": [
             {"market_id": 1, "exchange": exchange, "symbol": "BTC", "rate": rate},
-            {"market_id": 1, "exchange": "binance", "symbol": "BTC", "rate": "0.00009"},
+            {"market_id": 1, "exchange": "binance", "symbol": "BTC", "rate": "78.84"},
         ],
     }
 

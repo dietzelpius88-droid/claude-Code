@@ -41,6 +41,7 @@ class RateOut(BaseModel):
     rate_hourly: Decimal
     apr: Decimal
     native_rate: Decimal
+    native_convention: str
     native_interval_hours: Optional[Decimal]
     next_funding_time: Optional[datetime] = None
     as_of: datetime

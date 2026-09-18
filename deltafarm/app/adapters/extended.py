@@ -20,7 +20,7 @@ import structlog
 from app.adapters._parse import dec, dec_or_none, pick, req, ts_from_millis
 from app.adapters.base import FatalError, HttpAdapter
 from app.core import symbols as sym
-from app.core.funding import normalize_to_hourly, to_apr
+from app.core.funding import RateConvention, to_apr, to_hourly_fraction
 from app.models.domain import FundingInfo, Market, OrderBook, OrderBookLevel, SymbolRules
 
 LOG = structlog.get_logger(__name__)
@@ -35,6 +35,8 @@ class ExtendedAdapter(HttpAdapter):
     # abrufbar, deshalb wird dieser Wert beim Start gegen die tatsaechlichen
     # Zeitstempel geprueft (ADR-004) statt geglaubt.
     declared_interval_hours = Decimal(1)
+    # Extended liefert einen Bruch je Zahlungsintervall.
+    rate_convention = RateConvention.INTERVAL_FRACTION
 
     def _unwrap(self, antwort: Any, *, kontext: str) -> Any:
         """Schaelt {"status": "OK", "data": ...} aus."""
@@ -100,7 +102,11 @@ class ExtendedAdapter(HttpAdapter):
         kontext = f"{self.name} marketStats {symbol}"
 
         native_rate = dec(req(stats, "fundingRate", "funding_rate", kontext=kontext), kontext=kontext)
-        hourly = normalize_to_hourly(native_rate, self.declared_interval_hours)
+        hourly = to_hourly_fraction(
+            native_rate,
+            convention=self.rate_convention,
+            interval_hours=self.declared_interval_hours,
+        )
 
         # nextFundingRate ist laut SDK-Modell ein Zeitstempel (int), kein Betrag.
         naechste = pick(stats, "nextFundingRate", "next_funding_rate")
@@ -110,6 +116,7 @@ class ExtendedAdapter(HttpAdapter):
             venue=self.name,
             symbol=symbol,
             native_rate=native_rate,
+            native_convention=self.rate_convention.value,
             native_interval_hours=self.declared_interval_hours,
             rate_hourly=hourly,
             apr=to_apr(hourly),

@@ -14,6 +14,7 @@ from decimal import Decimal
 import uvicorn
 
 from app.adapters.mock import MockAdapter
+from app.core.funding import RateConvention
 from app.config import get_settings
 from app.main import create_app
 
@@ -29,15 +30,17 @@ EXTENDED_RATEN = {
     "XRP-PERP": Decimal("0.0000075"),
     "SUI-PERP": Decimal("0.0000410"),
 }
+# Lighter gibt die Rate als Prozent pro Jahr an - dieselben Groessenordnungen,
+# nur anders aufgeschrieben (0,0000065 je Stunde entsprechen 5,69 % p. a.).
 LIGHTER_RATEN = {
-    "BTC-PERP": Decimal("-0.0000065"),
-    "ETH-PERP": Decimal("0.0000120"),
-    "SOL-PERP": Decimal("-0.0000180"),
-    "AVAX-PERP": Decimal("0.0000260"),
-    "LINK-PERP": Decimal("0.0000140"),
-    "DOGE-PERP": Decimal("-0.0000090"),
-    "XRP-PERP": Decimal("0.0000080"),
-    "SUI-PERP": Decimal("0.0000050"),
+    "BTC-PERP": Decimal("-5.69"),
+    "ETH-PERP": Decimal("10.51"),
+    "SOL-PERP": Decimal("-15.77"),
+    "AVAX-PERP": Decimal("22.78"),
+    "LINK-PERP": Decimal("12.26"),
+    "DOGE-PERP": Decimal("-7.88"),
+    "XRP-PERP": Decimal("7.01"),
+    "SUI-PERP": Decimal("4.38"),
 }
 MARKEN = {
     "BTC-PERP": Decimal("64000"),
@@ -66,6 +69,7 @@ def build_demo_app():
             "lighter",
             rates=LIGHTER_RATEN,
             mark_prices=MARKEN,
+            convention=RateConvention.ANNUALIZED_PERCENT,
             taker_fee=Decimal("0.0001"),
             maker_fee=Decimal("0"),
         ),

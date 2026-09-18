@@ -5,6 +5,7 @@ export type Rate = {
   rate_hourly: string;
   apr: string;
   native_rate: string;
+  native_convention: string;
   native_interval_hours: string | null;
   next_funding_time: string | null;
   as_of: string;

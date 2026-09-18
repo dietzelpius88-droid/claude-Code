@@ -13,11 +13,56 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 from typing import Iterable, Optional, Sequence
 
 from app.models.domain import Side
 
 HOURS_PER_YEAR = Decimal(24 * 365)
+
+
+class RateConvention(StrEnum):
+    """Wie eine Boerse ihre Funding-Rate angibt.
+
+    Das ist nicht dasselbe wie das Zahlungsintervall. Lighter zahlt stuendlich,
+    gibt die Rate aber als Prozent pro Jahr an - beide Angaben stehen
+    nebeneinander in FundingInfo.
+    """
+
+    # Bruch je Intervall, z. B. 0,0000125 je Stunde (Extended).
+    INTERVAL_FRACTION = "interval_fraction"
+    # Prozent pro Jahr, z. B. 10,95 fuer 10,95 % p. a. (Lighter).
+    ANNUALIZED_PERCENT = "annualized_percent"
+
+
+def to_hourly_fraction(
+    native_rate: Decimal,
+    *,
+    convention: RateConvention,
+    interval_hours: Optional[Decimal] = None,
+) -> Decimal:
+    """Rechnet die native Angabe einer Boerse in einen Bruch je Stunde um.
+
+    Ein falsch angenommenes Format kostet hier nicht Faktor 8, sondern Faktor
+    876 000 - deshalb wird nichts stillschweigend ergaenzt oder ignoriert.
+    """
+    if convention is RateConvention.INTERVAL_FRACTION:
+        if interval_hours is None:
+            raise ValueError(
+                "INTERVAL_FRACTION braucht ein Intervall. Ein fehlendes Intervall "
+                "wird nicht als 1 Stunde angenommen."
+            )
+        return normalize_to_hourly(native_rate, interval_hours)
+
+    if convention is RateConvention.ANNUALIZED_PERCENT:
+        if interval_hours is not None:
+            raise ValueError(
+                "ANNUALIZED_PERCENT traegt das Jahr bereits in sich - ein zusaetzliches "
+                "Intervall waere ein Denkfehler."
+            )
+        return native_rate / Decimal(100) / HOURS_PER_YEAR
+
+    raise ValueError(f"Unbekannte Ratenkonvention: {convention}")
 
 
 def normalize_to_hourly(native_rate: Decimal, interval_hours: Decimal) -> Decimal:

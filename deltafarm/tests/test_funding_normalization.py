@@ -169,3 +169,71 @@ def test_intervall_unbestimmbar_bei_zu_wenigen_punkten():
 def test_unsortierte_zeitstempel_werden_sortiert():
     stamps = _stamps(6, 1.0)
     assert infer_interval_hours(list(reversed(stamps))) == Decimal(1)
+
+
+# --- Ratenkonventionen ----------------------------------------------------
+# Die Boersen geben ihre Rate unterschiedlich an. Extended liefert einen Bruch
+# je Intervall, Lighter Prozent pro Jahr. Beides muss auf dieselbe Stundenrate
+# fuehren, sonst ist die Vergleichsansicht wertlos.
+
+from app.core.funding import RateConvention, to_hourly_fraction  # noqa: E402
+
+
+def test_bruch_je_intervall_wie_extended():
+    hourly = to_hourly_fraction(
+        Decimal("0.0000125"),
+        convention=RateConvention.INTERVAL_FRACTION,
+        interval_hours=Decimal(1),
+    )
+    assert hourly == Decimal("0.0000125")
+
+
+def test_prozent_pro_jahr_wie_lighter():
+    # 10,95 % p. a. / 100 / 8760 h = 0,00125 % pro Stunde
+    hourly = to_hourly_fraction(
+        Decimal("10.95"), convention=RateConvention.ANNUALIZED_PERCENT
+    )
+    assert hourly == Decimal("0.0000125")
+
+
+def test_beide_konventionen_fuehren_auf_dieselbe_stundenrate():
+    """Der eigentliche Punkt: 0,00125 % je Stunde und 10,95 % p. a. sind
+    dieselbe wirtschaftliche Rate, nur anders aufgeschrieben."""
+    extended = to_hourly_fraction(
+        Decimal("0.0000125"),
+        convention=RateConvention.INTERVAL_FRACTION,
+        interval_hours=Decimal(1),
+    )
+    lighter = to_hourly_fraction(
+        Decimal("10.95"), convention=RateConvention.ANNUALIZED_PERCENT
+    )
+    assert extended == lighter
+    assert to_apr(lighter) == Decimal("0.1095")
+
+
+def test_prozent_pro_jahr_negativ():
+    hourly = to_hourly_fraction(
+        Decimal("-10.95"), convention=RateConvention.ANNUALIZED_PERCENT
+    )
+    assert hourly == Decimal("-0.0000125")
+
+
+def test_prozent_pro_jahr_null():
+    assert to_hourly_fraction(Decimal(0), convention=RateConvention.ANNUALIZED_PERCENT) == 0
+
+
+def test_bruch_je_intervall_ohne_intervall_wird_abgelehnt():
+    # Ein fehlendes Intervall wird nicht mit 1 angenommen.
+    with pytest.raises(ValueError):
+        to_hourly_fraction(Decimal("0.0001"), convention=RateConvention.INTERVAL_FRACTION)
+
+
+def test_prozent_konvention_ignoriert_ein_intervall_nicht_stillschweigend():
+    # Prozent p. a. traegt das Jahr schon in sich; ein Intervall waere ein
+    # Denkfehler und soll auffallen.
+    with pytest.raises(ValueError):
+        to_hourly_fraction(
+            Decimal("10.95"),
+            convention=RateConvention.ANNUALIZED_PERCENT,
+            interval_hours=Decimal(8),
+        )

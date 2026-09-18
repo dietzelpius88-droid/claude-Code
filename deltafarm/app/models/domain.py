@@ -75,7 +75,10 @@ class FundingInfo(_Model):
     venue: str
     symbol: str
     native_rate: Decimal
-    native_interval_hours: Optional[Decimal]  # None = kontinuierlich
+    # Wie die Boerse die Rate angibt - Bruch je Intervall oder Prozent p. a.
+    # Das ist unabhaengig vom Zahlungsintervall darunter.
+    native_convention: str = "interval_fraction"
+    native_interval_hours: Optional[Decimal] = None  # None = kontinuierlich
     rate_hourly: Decimal
     apr: Decimal
     as_of: datetime

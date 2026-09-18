@@ -87,11 +87,7 @@ export default function FundingTable({ daten }: { daten: FundingMatrix }) {
                     <Fragment key={v}>
                       <td
                         className={`px-3 py-1.5 text-right ${vorzeichenKlasse(r?.rate_hourly)}`}
-                        title={
-                          r
-                            ? `nativ ${r.native_rate} je ${r.native_interval_hours ?? "?"} h · Stand ${uhrzeit(r.as_of)}`
-                            : "keine Daten"
-                        }
+                        title={r ? nativHinweis(r) : "keine Daten"}
                       >
                         {r ? prozent(r.rate_hourly) : "–"}
                       </td>
@@ -147,6 +143,21 @@ export default function FundingTable({ daten }: { daten: FundingMatrix }) {
       )}
     </section>
   );
+}
+
+// Was die Boerse tatsaechlich geliefert hat - damit nachvollziehbar bleibt,
+// woraus die angezeigte Stundenrate gerechnet wurde.
+function nativHinweis(r: {
+  native_rate: string;
+  native_convention: string;
+  native_interval_hours: string | null;
+  as_of: string;
+}): string {
+  const form =
+    r.native_convention === "annualized_percent"
+      ? `${r.native_rate} % p. a.`
+      : `${r.native_rate} je ${r.native_interval_hours ?? "?"} h`;
+  return `nativ: ${form} · Zahlung alle ${r.native_interval_hours ?? "?"} h · Stand ${uhrzeit(r.as_of)}`;
 }
 
 function Th({

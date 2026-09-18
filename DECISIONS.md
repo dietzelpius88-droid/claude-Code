@@ -30,7 +30,14 @@ Code wandern. Die offenen Punkte sind in `RESEARCH.md` Abschnitt 6 einzeln aufge
 
 ## ADR-002 – Variational bleibt ein Adapter ohne Handelsfunktion
 
-**Phase:** 0 · **Status:** angenommen · **Datum:** 2026-09-18
+**Phase:** 0 · **Status:** **verworfen am 2026-09-18** · **Datum:** 2026-09-18
+
+> **Verworfen.** Der Betreiber hat entschieden, Variational ganz aus dem Projekt
+> zu lassen – auch als lesendes Bein. Es wird kein Variational-Adapter gebaut.
+> Das Flag `supports_trading` bleibt im Interface, weil es ohnehin vorgesehen ist
+> und Phase 1 bis 3 alle Adapter als read-only führt.
+
+Ursprüngliche Begründung, zur Nachvollziehbarkeit:
 
 **Kontext.** Variationals Trading-API ist laut eigener Doku weiterhin in Entwicklung und
 für keinen Nutzer freigeschaltet; öffentlich gibt es nur `GET /metadata/stats` ohne
@@ -265,3 +272,39 @@ sähe plausibel aus und wäre falsch. Lieber keine Zahl als eine falsche.
 
 **Folgen.** Beide Fragen bleiben offen und sind beim ersten Live-Abruf in einer
 Minute zu klären. Die Absicherung ersetzt die Antwort nicht.
+
+
+---
+
+## ADR-013 – Ratenkonvention statt angenommener Einheit
+
+**Phase:** 2 · **Status:** angenommen · **Datum:** 2026-09-18
+
+**Kontext.** Der Betreiber hat OFFEN-14 beantwortet: Lighters Feld `rate` in
+`/api/v1/funding-rates` ist **Prozent pro Jahr**, nicht ein Bruch je Intervall.
+Die bisherige Umsetzung hätte den Wert ungerechnet als Stundenrate übernommen –
+Faktor 876 000 im angezeigten APR.
+
+**Entscheidung.** Die Art der Angabe wird als eigene Größe geführt
+(`RateConvention`), getrennt vom Zahlungsintervall:
+
+* `INTERVAL_FRACTION` – Bruch je Intervall (Extended)
+* `ANNUALIZED_PERCENT` – Prozent pro Jahr (Lighter)
+
+`to_hourly_fraction()` rechnet beides auf einen Bruch je Stunde um und lehnt
+unstimmige Eingaben ab: `INTERVAL_FRACTION` ohne Intervall ebenso wie
+`ANNUALIZED_PERCENT` **mit** Intervall – letzteres wäre ein Denkfehler, weil die
+Jahresangabe das Intervall bereits enthält.
+
+**Begründung.** Konvention und Zahlungsintervall sind zwei verschiedene Dinge.
+Lighter zahlt stündlich *und* gibt die Rate jährlich an; beide Angaben stehen
+jetzt nebeneinander in `FundingInfo`, statt dass eine die andere überschreibt.
+
+**Folgen.** Die Plausibilitätsprüfung aus ADR-012 bleibt als Netz bestehen. Ein
+Test hält fest, dass eine Angabe von 0,00125 % je Stunde und eine von 10,95 %
+p. a. auf exakt dieselbe Stundenrate führen.
+
+Offen bleibt, ob das Feld `rate` in der **Historie** (`/api/v1/fundings`) der
+gleichen Konvention folgt – sein Beispiel in der `openapi.json` lautet `0.0001`,
+was eher nach Bruch aussieht. Dieses Feld wird deshalb nicht als Rate genutzt,
+sondern nur für die Zeitstempel der Intervallprüfung.

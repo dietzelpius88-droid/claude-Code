@@ -158,6 +158,7 @@ async def funding(
             rate_hourly=f.rate_hourly,
             apr=f.apr,
             native_rate=f.native_rate,
+            native_convention=f.native_convention,
             native_interval_hours=f.native_interval_hours,
             next_funding_time=f.next_funding_time,
             as_of=f.as_of,

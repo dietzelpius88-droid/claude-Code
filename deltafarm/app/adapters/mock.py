@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Optional, Sequence
 
 from app.adapters.base import FatalError, ReadOnlyAdapter, RetryableError
-from app.core.funding import normalize_to_hourly, to_apr
+from app.core.funding import RateConvention, to_apr, to_hourly_fraction
 from app.models.domain import FundingInfo, Market, OrderBook, OrderBookLevel, SymbolRules
 
 
@@ -26,6 +26,7 @@ class MockAdapter(ReadOnlyAdapter):
         rates: Optional[dict[str, Decimal]] = None,
         mark_prices: Optional[dict[str, Decimal]] = None,
         interval_hours: Decimal = Decimal(1),
+        convention: RateConvention = RateConvention.INTERVAL_FRACTION,
         tick_size: Decimal = Decimal("0.1"),
         lot_size: Decimal = Decimal("0.001"),
         min_notional: Decimal = Decimal(10),
@@ -39,6 +40,7 @@ class MockAdapter(ReadOnlyAdapter):
         self.name = name
         self.supports_trading = supports_trading
         self.declared_interval_hours = interval_hours
+        self.rate_convention = convention
         self._rates = rates or {"BTC-PERP": Decimal("0.00001")}
         self._marks = mark_prices or {"BTC-PERP": Decimal(60000)}
         self._tick = tick_size
@@ -74,11 +76,20 @@ class MockAdapter(ReadOnlyAdapter):
         if symbol not in self._rates:
             raise FatalError(f"{self.name}: {symbol} unbekannt.", venue=self.name)
         native = self._rates[symbol]
-        hourly = normalize_to_hourly(native, self.declared_interval_hours)
+        hourly = to_hourly_fraction(
+            native,
+            convention=self.rate_convention,
+            interval_hours=(
+                self.declared_interval_hours
+                if self.rate_convention is RateConvention.INTERVAL_FRACTION
+                else None
+            ),
+        )
         return FundingInfo(
             venue=self.name,
             symbol=symbol,
             native_rate=native,
+            native_convention=self.rate_convention.value,
             native_interval_hours=self.declared_interval_hours,
             rate_hourly=hourly,
             apr=to_apr(hourly),

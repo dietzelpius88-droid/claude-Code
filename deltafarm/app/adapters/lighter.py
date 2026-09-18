@@ -22,7 +22,7 @@ import structlog
 from app.adapters._parse import dec, dec_or_none, pick, req, ts_from_seconds
 from app.adapters.base import FatalError, HttpAdapter
 from app.core import symbols as sym
-from app.core.funding import normalize_to_hourly, to_apr
+from app.core.funding import RateConvention, to_apr, to_hourly_fraction
 from app.models.domain import FundingInfo, Market, OrderBook, OrderBookLevel, SymbolRules
 
 LOG = structlog.get_logger(__name__)
@@ -32,17 +32,26 @@ class LighterAdapter(HttpAdapter):
     name = sym.LIGHTER
     supports_trading = False  # Phase 1 ist read-only
 
-    # Die Historie kennt nur die Aufloesungen 1h und 1d (openapi.json), was
-    # fuer stuendliches Funding spricht. Belegt ist es nicht - deshalb wird der
-    # Wert beim Start gegen die tatsaechlichen Zeitstempel geprueft (ADR-004).
+    # Zahlungsintervall. Die Historie kennt nur die Aufloesungen 1h und 1d
+    # (openapi.json), was fuer stuendliches Funding spricht. Belegt ist es
+    # nicht - deshalb wird der Wert beim Start gegen die tatsaechlichen
+    # Zeitstempel geprueft (ADR-004).
     declared_interval_hours = Decimal(1)
+
+    # Das Feld "rate" in /api/v1/funding-rates ist Prozent pro Jahr, nicht ein
+    # Bruch je Intervall. Die openapi.json sagt dazu nichts; die Angabe stammt
+    # vom Betreiber dieses Werkzeugs. Achtung: das Feld "rate" in der Historie
+    # (/api/v1/fundings) traegt dort ein Beispiel von "0.0001" und koennte einer
+    # anderen Konvention folgen - es wird hier nur fuer die Zeitstempel genutzt,
+    # nie fuer eine Rate.
+    rate_convention = RateConvention.ANNUALIZED_PERCENT
 
     # Welcher Wert im Feld "exchange" fuer Lighter selbst steht, ist nicht
     # dokumentiert. Der Endpunkt liefert offenbar auch fremde Boersen, und eine
     # fremde Rate als Lighter-Rate zu verbuchen waere der teuerste Fehler
     # ueberhaupt. Deshalb wird hier gefiltert und bei Nichttreffer laut
     # abgebrochen - nie stillschweigend der erste Treffer genommen.
-    exchange_tag_candidates = ("lighter", "zklighter", "LIGHTER")
+    exchange_tag_candidates = ("lighter", "zklighter", "lit")
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
@@ -147,12 +156,13 @@ class LighterAdapter(HttpAdapter):
             )
 
         native_rate = dec(req(eigene[0], "rate", kontext=kontext), kontext=kontext)
-        hourly = normalize_to_hourly(native_rate, self.declared_interval_hours)
+        hourly = to_hourly_fraction(native_rate, convention=self.rate_convention)
 
         return FundingInfo(
             venue=self.name,
             symbol=symbol,
             native_rate=native_rate,
+            native_convention=self.rate_convention.value,
             native_interval_hours=self.declared_interval_hours,
             rate_hourly=hourly,
             apr=to_apr(hourly),

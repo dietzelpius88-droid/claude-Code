@@ -36,16 +36,32 @@ async def test_maerkte_werden_gelesen_und_uebersetzt():
 
 
 @respx.mock
-async def test_funding_wird_normalisiert():
+async def test_prozent_pro_jahr_wird_in_eine_stundenrate_umgerechnet():
+    """Lighter gibt die Rate als Prozent pro Jahr an, nicht als Bruch je Stunde.
+
+    Wuerde man den Wert ungerechnet uebernehmen, waere der angezeigte APR um
+    Faktor 876 000 zu hoch.
+    """
     respx.get(f"{BASE}/api/v1/funding-rates").mock(
         return_value=httpx.Response(200, json=lighter_funding_rates())
     )
     info = await _adapter().get_funding("BTC-PERP")
 
-    assert info.native_rate == Decimal("0.0000125")
-    assert info.native_interval_hours == Decimal(1)
+    assert info.native_rate == Decimal("10.95")
+    assert info.native_convention == "annualized_percent"
     assert info.rate_hourly == Decimal("0.0000125")
     assert info.apr == Decimal("0.1095")
+    # Das Zahlungsintervall bleibt davon unberuehrt.
+    assert info.native_interval_hours == Decimal(1)
+
+
+@respx.mock
+async def test_native_rate_wird_nicht_versehentlich_als_stundenrate_uebernommen():
+    respx.get(f"{BASE}/api/v1/funding-rates").mock(
+        return_value=httpx.Response(200, json=lighter_funding_rates())
+    )
+    info = await _adapter().get_funding("BTC-PERP")
+    assert info.rate_hourly != info.native_rate
 
 
 @respx.mock
@@ -69,11 +85,12 @@ async def test_fremde_boersenrate_wird_niemals_als_lighter_rate_verbucht():
 @respx.mock
 async def test_richtige_boerse_wird_aus_mehreren_eintraegen_gewaehlt():
     respx.get(f"{BASE}/api/v1/funding-rates").mock(
-        return_value=httpx.Response(200, json=lighter_funding_rates(rate="0.00003"))
+        return_value=httpx.Response(200, json=lighter_funding_rates(rate="26.28"))
     )
     info = await _adapter().get_funding("BTC-PERP")
-    # 0,00009 waere der Binance-Eintrag gewesen.
-    assert info.native_rate == Decimal("0.00003")
+    # 78,84 waere der Binance-Eintrag gewesen.
+    assert info.native_rate == Decimal("26.28")
+    assert info.rate_hourly == Decimal("0.00003")
 
 
 @respx.mock
@@ -183,3 +200,13 @@ async def test_funding_zeitstempel_fuer_die_intervallpruefung():
 
     assert len(zeiten) == 5
     assert (zeiten[1] - zeiten[0]).total_seconds() == 3600
+
+
+@respx.mock
+async def test_kennung_lit_wird_als_lighter_erkannt():
+    """Der Ticker des Lighter-Tokens als Boersenkennung."""
+    respx.get(f"{BASE}/api/v1/funding-rates").mock(
+        return_value=httpx.Response(200, json=lighter_funding_rates(exchange="LIT"))
+    )
+    info = await _adapter().get_funding("BTC-PERP")
+    assert info.rate_hourly == Decimal("0.0000125")
