@@ -11,9 +11,22 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional, Sequence
 
+import asyncio
+
 from app.adapters.base import FatalError, ReadOnlyAdapter, RetryableError
 from app.core.funding import RateConvention, to_apr, to_hourly_fraction
-from app.models.domain import FundingInfo, Market, OrderBook, OrderBookLevel, SymbolRules
+from app.models.domain import (
+    FundingInfo,
+    Position,
+    Market,
+    OrderBook,
+    OrderBookLevel,
+    OrderRequest,
+    OrderResult,
+    OrderStatus,
+    Side,
+    SymbolRules,
+)
 
 
 class MockAdapter(ReadOnlyAdapter):
@@ -36,6 +49,14 @@ class MockAdapter(ReadOnlyAdapter):
         funding_spacing_hours: Decimal = Decimal(1),
         fail_with: Optional[Exception] = None,
         supports_trading: bool = False,
+        # --- Handel (Phase 3) ---
+        fill_ratio: Decimal = Decimal(1),
+        reject_orders: bool = False,
+        order_delay_seconds: float = 0.0,
+        reject_after: Optional[int] = None,
+        positions: Optional[list] = None,
+        book_step: Decimal = Decimal("0.0001"),
+        book_depth_per_level: Optional[Decimal] = None,
     ) -> None:
         self.name = name
         self.supports_trading = supports_trading
@@ -52,6 +73,19 @@ class MockAdapter(ReadOnlyAdapter):
         self._spacing = funding_spacing_hours
         self._fail_with = fail_with
         self.calls: list[str] = []
+        # Handel
+        self._fill_ratio = fill_ratio
+        self._reject_orders = reject_orders
+        self._order_delay = order_delay_seconds
+        self._reject_after = reject_after
+        self.placed_orders: list[OrderRequest] = []
+        self.cancelled_orders: list[str] = []
+        self.closed_positions: list[str] = []
+        self._positions = list(positions or [])
+        self._book_step = book_step
+        # Tiefe je Stufe: ohne Angabe so gewaehlt, dass uebliche Groessen
+        # durchlaufen, ohne das Buch zu leeren.
+        self._book_depth_per_level = book_depth_per_level or Decimal(100)
 
     def _maybe_fail(self, was: str) -> None:
         self.calls.append(was)
@@ -99,14 +133,20 @@ class MockAdapter(ReadOnlyAdapter):
     async def get_orderbook(self, symbol: str, depth: int = 20) -> OrderBook:
         self._maybe_fail(f"get_orderbook:{symbol}")
         mark = self._marks.get(symbol, Decimal(60000))
+        # Der Preisschritt ist relativ zum Mark-Preis (ein Basispunkt je
+        # Stufe). Ein fester Schritt von einem Dollar waere bei einem
+        # 148-Dollar-Asset absurd steil und bei Bitcoin unmerklich flach.
+        schritt = mark * self._book_step
         return OrderBook(
             venue=self.name,
             symbol=symbol,
             bids=tuple(
-                OrderBookLevel(price=mark - Decimal(i + 1), size=Decimal(1)) for i in range(depth)
+                OrderBookLevel(price=mark - schritt * (i + 1), size=self._book_depth_per_level)
+                for i in range(depth)
             ),
             asks=tuple(
-                OrderBookLevel(price=mark + Decimal(i + 1), size=Decimal(1)) for i in range(depth)
+                OrderBookLevel(price=mark + schritt * (i + 1), size=self._book_depth_per_level)
+                for i in range(depth)
             ),
             as_of=datetime(2026, 9, 18, tzinfo=timezone.utc),
         )
@@ -136,6 +176,79 @@ class MockAdapter(ReadOnlyAdapter):
 
     async def aclose(self) -> None:
         return None
+
+
+    # --- Handel (Phase 3) -------------------------------------------------
+
+    async def place_order(self, req: OrderRequest) -> OrderResult:
+        """Simuliert eine Order. Verhalten ueber den Konstruktor einstellbar."""
+        self.calls.append(f"place_order:{req.venue}:{req.side.value}:{req.size}")
+
+        if self._order_delay:
+            await asyncio.sleep(self._order_delay)
+
+        self.placed_orders.append(req)
+
+        abgelehnt = self._reject_orders or (
+            self._reject_after is not None and len(self.placed_orders) > self._reject_after
+        )
+        if abgelehnt:
+            return OrderResult(
+                venue=self.name,
+                symbol=req.symbol,
+                client_order_id=req.client_order_id,
+                status=OrderStatus.REJECTED,
+                filled_size=Decimal(0),
+                dry_run=True,
+                detail="vom MockAdapter abgelehnt",
+                as_of=datetime(2026, 9, 19, tzinfo=timezone.utc),
+            )
+
+        gefuellt = req.size * self._fill_ratio
+        preis = self._marks.get(req.symbol, Decimal(60000))
+        status = OrderStatus.FILLED if gefuellt >= req.size else OrderStatus.PARTIALLY_FILLED
+
+        return OrderResult(
+            venue=self.name,
+            symbol=req.symbol,
+            client_order_id=req.client_order_id,
+            exchange_order_id=f"mock-{len(self.placed_orders)}",
+            status=status,
+            filled_size=gefuellt,
+            average_price=preis,
+            fee=gefuellt * preis * (self._taker or Decimal(0)),
+            dry_run=True,
+            as_of=datetime(2026, 9, 19, tzinfo=timezone.utc),
+        )
+
+    async def cancel_order(self, order_id: str) -> None:
+        self.calls.append(f"cancel_order:{order_id}")
+        self.cancelled_orders.append(order_id)
+
+    async def close_position(self, symbol: str) -> OrderResult:
+        self.calls.append(f"close_position:{symbol}")
+        self.closed_positions.append(symbol)
+        preis = self._marks.get(symbol, Decimal(60000))
+        return OrderResult(
+            venue=self.name,
+            symbol=symbol,
+            client_order_id=f"close-{symbol}",
+            exchange_order_id=f"mock-close-{len(self.closed_positions)}",
+            status=OrderStatus.FILLED,
+            filled_size=Decimal(1),
+            average_price=preis,
+            dry_run=True,
+            as_of=datetime(2026, 9, 19, tzinfo=timezone.utc),
+        )
+
+    async def get_positions(self) -> list[Position]:
+        """Offene Positionen. Leer, solange keine gesetzt wurden."""
+        self.calls.append("get_positions")
+        return list(self._positions)
+
+    async def open_orders(self, symbol: Optional[str] = None) -> list[str]:
+        """Offene Order-IDs. Der MockAdapter meldet keine, sofern nicht gesetzt."""
+        return getattr(self, "_open_orders", [])
 
 
 def failing_adapter(name: str, *, retryable: bool = True) -> MockAdapter:

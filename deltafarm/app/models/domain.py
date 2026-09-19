@@ -234,3 +234,73 @@ class PositionHealth(_Model):
     margin_usage: Optional[Decimal] = None
     level: HealthLevel = HealthLevel.GREEN
     detail: Optional[str] = None
+
+
+# --- Ausfuehrung (Phase 3) ------------------------------------------------
+
+
+class OrderType(StrEnum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+
+
+class OrderStatus(StrEnum):
+    NEW = "NEW"
+    FILLED = "FILLED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
+
+
+class PairState(StrEnum):
+    """Zustaende eines Paares.
+
+    UNHEDGED ist der gefaehrliche: ein Bein steht, das andere nicht. Das ist
+    eine ungesicherte Richtungswette und verlangt eine Entscheidung.
+    """
+
+    PLANNED = "PLANNED"
+    OPENING_FIRST = "OPENING_FIRST"
+    FIRST_FILLED = "FIRST_FILLED"
+    OPENING_SECOND = "OPENING_SECOND"
+    OPEN = "OPEN"
+    UNHEDGED = "UNHEDGED"
+    ROLLING_BACK = "ROLLING_BACK"
+    CLOSING = "CLOSING"
+    CLOSED = "CLOSED"
+    FAILED = "FAILED"
+
+
+class OrderRequest(_Model):
+    venue: str
+    symbol: str
+    side: Side
+    size: Decimal
+    order_type: OrderType = OrderType.MARKET
+    price: Optional[Decimal] = None
+    reduce_only: bool = False
+    # Selbst erzeugt. Ein Retry darf nie zu einer zweiten Position fuehren.
+    client_order_id: str
+
+
+class OrderResult(_Model):
+    venue: str
+    symbol: str
+    client_order_id: str
+    exchange_order_id: Optional[str] = None
+    status: OrderStatus
+    filled_size: Decimal = Decimal(0)
+    average_price: Optional[Decimal] = None
+    fee: Optional[Decimal] = None
+    # True = im Trockenlauf erzeugt, nicht an die Boerse gesendet.
+    dry_run: bool = True
+    detail: Optional[str] = None
+    as_of: datetime
+
+    @property
+    def is_filled(self) -> bool:
+        return self.status is OrderStatus.FILLED and self.filled_size > 0
+
+    @property
+    def is_partial(self) -> bool:
+        return self.status is OrderStatus.PARTIALLY_FILLED and self.filled_size > 0
