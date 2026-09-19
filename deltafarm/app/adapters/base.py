@@ -10,7 +10,7 @@ import asyncio
 import json
 import random
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Awaitable, Callable, Optional, Protocol, Sequence, TypeVar, runtime_checkable
 
@@ -21,6 +21,9 @@ from app.models.domain import (
     FundingInfo,
     Market,
     OrderBook,
+    OrderRequest,
+    OrderResult,
+    OrderStatus,
     SymbolRules,
 )
 
@@ -249,7 +252,9 @@ class HttpAdapter(ReadOnlyAdapter):
         timeout: float = 10.0,
         headers: Optional[dict[str, str]] = None,
         client: Optional[httpx.AsyncClient] = None,
+        dry_run: bool = True,
     ) -> None:
+        self.dry_run = dry_run
         self.base_url = base_url.rstrip("/")
         self._bucket = TokenBucket(rate_per_second=rate_per_second, capacity=burst)
         self._client = client or httpx.AsyncClient(
@@ -289,3 +294,108 @@ class HttpAdapter(ReadOnlyAdapter):
             return json.loads(antwort.text, parse_float=Decimal)
 
         return await with_retries(einmal, context=f"{self.name}{path}")
+
+    # --- Handel (Phase 3: ausschliesslich Trockenlauf) -------------------
+
+    async def place_order(self, req: OrderRequest) -> OrderResult:
+        """Laeuft den vollstaendigen Orderpfad ab, sendet aber nichts.
+
+        Bewusst mit echter Pruefung gegen die Regeln der Boerse: nur so faellt
+        eine ungueltige Groesse schon im Trockenlauf auf und nicht erst beim
+        ersten echten Versuch. Gesendet wird erst ab Phase 4.
+        """
+        if not self.dry_run:
+            raise TradingNotSupported(
+                f"{self.name}: Live-Orders sind noch nicht freigeschaltet (Phase 4). "
+                "DELTAFARM_DRY_RUN steht auf false, aber der Adapter kann noch nicht senden.",
+                venue=self.name,
+            )
+
+        regeln = await self.get_symbol_rules(req.symbol)
+
+        if req.size <= 0:
+            raise FatalError(f"{self.name}: Ordergroesse muss positiv sein, war {req.size}.",
+                             venue=self.name)
+
+        rest = req.size % regeln.lot_size
+        if rest != 0:
+            raise FatalError(
+                f"{self.name}: {req.size} ist kein Vielfaches der Lot-Size {regeln.lot_size} "
+                f"(Rest {rest}).",
+                venue=self.name,
+            )
+
+        mark = await self.get_mark_price(req.symbol)
+        notional = req.size * mark
+        if notional < regeln.min_notional:
+            raise FatalError(
+                f"{self.name}: {notional:.2f} USD liegen unter der Mindestgroesse "
+                f"{regeln.min_notional} USD.",
+                venue=self.name,
+            )
+
+        LOG.warning(
+            "trockenlauf_order",
+            venue=self.name,
+            symbol=req.symbol,
+            seite=req.side.value,
+            groesse=str(req.size),
+            typ=req.order_type.value,
+            client_order_id=req.client_order_id,
+            geschaetzter_preis=str(mark),
+            notional=str(notional),
+            hinweis="NICHT gesendet - Trockenlauf",
+        )
+
+        gebuehr = notional * regeln.taker_fee if regeln.taker_fee is not None else None
+        return OrderResult(
+            venue=self.name,
+            symbol=req.symbol,
+            client_order_id=req.client_order_id,
+            exchange_order_id=None,
+            status=OrderStatus.FILLED,
+            filled_size=req.size,
+            average_price=mark,
+            fee=gebuehr,
+            dry_run=True,
+            detail="Trockenlauf - keine Order an die Boerse gesendet",
+            as_of=datetime.now(timezone.utc),
+        )
+
+    async def cancel_order(self, order_id: str) -> None:
+        if not self.dry_run:
+            raise TradingNotSupported(
+                f"{self.name}: Stornieren ist noch nicht freigeschaltet (Phase 4).",
+                venue=self.name,
+            )
+        LOG.warning("trockenlauf_storno", venue=self.name, order_id=order_id)
+
+    async def close_position(self, symbol: str) -> OrderResult:
+        if not self.dry_run:
+            raise TradingNotSupported(
+                f"{self.name}: Schliessen ist noch nicht freigeschaltet (Phase 4).",
+                venue=self.name,
+            )
+        mark = await self.get_mark_price(symbol)
+        LOG.warning(
+            "trockenlauf_schliessen",
+            venue=self.name,
+            symbol=symbol,
+            geschaetzter_preis=str(mark),
+            hinweis="NICHT gesendet - Trockenlauf",
+        )
+        return OrderResult(
+            venue=self.name,
+            symbol=symbol,
+            client_order_id=f"close-{symbol}",
+            status=OrderStatus.FILLED,
+            filled_size=Decimal(0),
+            average_price=mark,
+            dry_run=True,
+            detail="Trockenlauf - Position nicht wirklich geschlossen",
+            as_of=datetime.now(timezone.utc),
+        )
+
+    async def open_orders(self, symbol: Optional[str] = None) -> list[str]:
+        """Offene Order-IDs. Im Trockenlauf gibt es keine."""
+        return []
