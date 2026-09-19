@@ -112,9 +112,17 @@ export default function FundingTable({ daten }: { daten: FundingMatrix }) {
                       <span className="text-emerald-400">L</span> {z.best.long_venue}
                       <span className="mx-1 text-slate-600">/</span>
                       <span className="text-rose-400">S</span> {z.best.short_venue}
+                      {z.best.asset_match === null && (
+                        <span
+                          className="ml-1.5 text-slate-600"
+                          title="Ohne Mark-Preise lässt sich nicht bestätigen, dass beide Börsen dasselbe Asset meinen."
+                        >
+                          ?
+                        </span>
+                      )}
                     </span>
                   ) : (
-                    <span className="text-slate-600">nur eine Boerse</span>
+                    <span className="text-slate-600">{grundFuerKeinPaar(z)}</span>
                   )}
                 </td>
 
@@ -143,6 +151,13 @@ export default function FundingTable({ daten }: { daten: FundingMatrix }) {
       )}
     </section>
   );
+}
+
+// Warum ein Symbol keinen Paarvorschlag hat. Ein gleicher Ticker allein macht
+// zwei Listings noch nicht zum selben Asset - steht nur eine Boerse in der
+// Zeile, fehlt schlicht die Gegenseite.
+function grundFuerKeinPaar(zeile: { rates: Record<string, unknown> }): string {
+  return Object.keys(zeile.rates).length < 2 ? "nur eine Börse" : "Assets passen nicht zusammen";
 }
 
 // Was die Boerse tatsaechlich geliefert hat - damit nachvollziehbar bleibt,

@@ -1,17 +1,20 @@
-import type { Health, Venue } from "../api";
-import { uhrzeit } from "../format";
+import type { BalanceRow, Health, Venue } from "../api";
+import { betrag, uhrzeit } from "../format";
 
 type Props = {
   health: Health | undefined;
   venues: Venue[] | undefined;
+  balances: BalanceRow[] | undefined;
   stand: string | undefined;
 };
 
 // Umgebung und Modus stehen dauerhaft in der Kopfzeile. Es darf nie unklar
 // sein, ob gerade gegen Testnet oder Mainnet gearbeitet wird.
-export default function Header({ health, venues, stand }: Props) {
+export default function Header({ health, venues, balances, stand }: Props) {
   const mainnet = health?.environment === "mainnet";
   const live = health?.dry_run === false;
+
+  const gesamtkapital = (balances ?? []).reduce((summe, b) => summe + Number(b.equity), 0);
 
   return (
     <header className="border-b border-slate-800 bg-slate-950/80 px-4 py-3">
@@ -34,6 +37,12 @@ export default function Header({ health, venues, stand }: Props) {
           {health === undefined ? "…" : live ? "LIVE" : "DRY RUN"}
         </span>
 
+        {balances && balances.length > 0 && (
+          <span className="text-xs text-slate-400">
+            Kapital <span className="text-slate-200">{betrag(String(gesamtkapital))} $</span>
+          </span>
+        )}
+
         <div className="ml-auto flex items-center gap-3 text-xs text-slate-400">
           {venues?.map((v) => (
             <span key={v.name} className="flex items-center gap-1.5" title={v.detail ?? undefined}>
@@ -44,8 +53,8 @@ export default function Header({ health, venues, stand }: Props) {
               />
               {v.name}
               {!v.supports_trading && (
-                <span className="text-slate-600" title="Adapter handelt nicht (Phase 1)">
-                  · nur Marktdaten
+                <span className="text-slate-600" title="Adapter sendet keine Orders">
+                  · nur lesend
                 </span>
               )}
             </span>
