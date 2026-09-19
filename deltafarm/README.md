@@ -4,7 +4,7 @@ Lokales Dashboard für delta-neutrales Funding-Farming über zwei Perp-DEX hinwe
 Gleiche Größe long auf der einen, short auf der anderen Börse; verdient wird an
 der Funding-Differenz.
 
-**Stand: Phase 1.** Es werden Marktdaten gelesen und Paare bewertet.
+**Stand: Phase 2.** Marktdaten, Kontostände, Positionen und Journal.
 Es wird keine Order gesendet — die Handelsmethoden der Adapter werfen bewusst
 einen Fehler. Börsen: **Extended** und **Lighter**.
 
@@ -21,16 +21,30 @@ make test      # alle Tests
 `http://127.0.0.1:5173`. Beides bindet ausschließlich an `127.0.0.1` und ist
 weder aus dem LAN noch aus dem Internet erreichbar.
 
-Phase 1 braucht **keine Schlüssel**: alle genutzten Endpunkte sind öffentlich.
+Für die Funding-Vergleichsansicht braucht es **keine Schlüssel** — alle dafür
+genutzten Endpunkte sind öffentlich. Kontostände und Positionen erscheinen,
+sobald Zugangsdaten in der `.env` stehen (siehe unten). Signiert wird nichts:
+Extended liest mit dem `X-Api-Key`-Header, Lighter allein über den
+Account-Index.
 
 ## Was das Dashboard zeigt
 
-Eine Tabelle je Symbol mit der Funding-Rate beider Börsen, jeweils als
-Stundenrate und als APR, dazu der Netto-APR des besten Paares, die Richtung
-(wo long, wo short) und die Mindesthaltedauer bis zum Break-even.
+**Funding-Vergleich:** eine Tabelle je Symbol mit der Funding-Rate beider
+Börsen, jeweils als Stundenrate und als APR, dazu der Netto-APR des besten
+Paares, die Richtung (wo long, wo short) und die Mindesthaltedauer bis zum
+Break-even.
+
+**Offene Positionen:** je Symbol eine Karte mit beiden Beinen, Einstieg und
+Mark-Preis, PnL, Rest-Delta in USD und Prozent, erhaltenem Funding, Haltedauer
+und einem Balken je Bein für den Abstand zur Liquidation. Ein Symbol mit nur
+einem offenen Bein wird deutlich als **NICHT GEHEDGT** markiert — das ist eine
+ungesicherte Richtungswette, keine delta-neutrale Position.
+
+**Journal** (eigener Tab): jede Aktion und jede Funding-Zahlung chronologisch,
+filterbar, mit CSV-Export.
 
 In der Kopfzeile stehen dauerhaft Umgebung (TESTNET/MAINNET), Modus
-(DRY RUN/LIVE) und der Verbindungsstatus beider Börsen.
+(DRY RUN/LIVE), Gesamtkapital und der Verbindungsstatus beider Börsen.
 
 ## Sicherheit
 
@@ -89,6 +103,16 @@ Zwei Schutzmechanismen laufen mit:
    mehr als Faktor 20 auseinander, erscheint eine Warnung im Dashboard. Das
    deutet auf unterschiedliche Einheiten (Bruch gegen Prozent) hin, nicht auf
    einen echten Marktunterschied.
+3. **Asset-Prüfung.** Ein gleicher Ticker macht zwei Listings noch nicht zum
+   selben Asset. Bevor zwei Raten verglichen werden, müssen die Mark-Preise das
+   bestätigen; weichen sie um mehr als 2 % ab, wird das Paar als ungültig
+   markiert und erscheint nie als Vorschlag. Ohne Preise bleibt die Prüfung
+   unentschieden und die Oberfläche zeigt ein Fragezeichen.
+
+Die beiden Börsen geben ihre Rate unterschiedlich an: Extended einen Bruch je
+Zahlungsintervall, Lighter **Prozent pro Jahr**. Die Art der Angabe wird getrennt
+vom Zahlungsintervall geführt; verglichen wird ausschließlich die daraus
+normalisierte Stundenrate.
 
 ## Aufbau
 
@@ -111,12 +135,33 @@ Ausgabe über die API (Decimals gehen als String über die Leitung).
 ## API
 
 ```
-GET /api/health          Status, Modus, Umgebung
-GET /api/venues          je Börse: erreichbar, handelsfähig, Umgebung
-GET /api/markets         Märkte je Börse
-GET /api/funding         Vergleichsmatrix, normalisiert
-GET /api/opportunities   Paare nach Netto-APR sortiert, mit Break-even
+GET /api/health                Status, Modus, Umgebung
+GET /api/venues                je Börse: erreichbar, handelsfähig, Umgebung
+GET /api/markets               Märkte je Börse
+GET /api/funding               Vergleichsmatrix, normalisiert
+GET /api/opportunities         Paare nach Netto-APR sortiert, mit Break-even
+GET /api/balances              Kontostände je Börse
+GET /api/positions             offene Positionen, zu Paaren gruppiert
+GET /api/journal?format=csv    Journal als JSON oder CSV
 ```
+
+## Datenbank
+
+Eine SQLite-Datei (`deltafarm.db`), kein Server. Tabellen: `venues`, `pairs`,
+`legs`, `orders`, `fills`, `funding_payments`, `events`, `snapshots`.
+
+Beträge werden als **Text** abgelegt — SQLAlchemys `Numeric` liefe auf SQLite
+durch `float`. Schemaänderungen laufen über Alembic:
+
+```bash
+.venv/bin/alembic upgrade head        # bestehende Datei migrieren
+.venv/bin/alembic revision --autogenerate -m "…"
+```
+
+Funding-Zahlungen werden periodisch nachgeladen und über (Börse, externe ID)
+gegen Doppelzählung gesichert. Eine Zahlung, die nicht von der Börse bestätigt,
+sondern aus Rate und Größe gerechnet wurde, ist im Journal und im CSV-Export als
+`gerechnet` gekennzeichnet und wird nie wie eine bestätigte dargestellt.
 
 ## Weiterführend
 

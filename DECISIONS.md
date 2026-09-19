@@ -308,3 +308,106 @@ Offen bleibt, ob das Feld `rate` in der **Historie** (`/api/v1/fundings`) der
 gleichen Konvention folgt – sein Beispiel in der `openapi.json` lautet `0.0001`,
 was eher nach Bruch aussieht. Dieses Feld wird deshalb nicht als Rate genutzt,
 sondern nur für die Zeitstempel der Intervallprüfung.
+
+
+---
+
+## ADR-014 – Gleicher Ticker ist kein Beweis: Assets werden über den Preis geprüft
+
+**Phase:** 2 · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** Der Betreiber hat auf einem fremden Werkzeug einen Fehler
+beobachtet: Es verglich die Funding-Raten zweier **verschiedener Assets**, weil
+beide denselben Ticker trugen. Das ist kein Randfall – Ticker sind über Börsen
+hinweg nicht eindeutig, gerade bei kleineren Token.
+
+Der Auftrag sah eine Mark-Preis-Prüfung nur im Preflight vor (Abschnitt 6.2,
+Prüfung 3), also erst unmittelbar vor der Ausführung. Ein falsch gepaartes
+Symbol hätte aber schon in der Vergleichsansicht als attraktive Chance
+dagestanden – mit einem Netto-APR, der reine Fiktion ist.
+
+**Entscheidung.** Die Prüfung wandert nach vorn, in die Paarbildung selbst.
+`build_opportunities()` vergleicht die Mark-Preise beider Börsen und führt das
+Ergebnis in jedem Paar mit:
+
+* `asset_match = True` – die Preise bestätigen dasselbe Asset
+* `asset_match = False` – sie widerlegen es (Standardschwelle: 2 % relative
+  Abweichung, konfigurierbar)
+* `asset_match = None` – keine Preise vorhanden, also keine Aussage
+
+Ein widerlegtes Paar wird **nicht verworfen**, sondern ans Ende der Liste
+sortiert, als ungültig markiert und erzeugt eine sichtbare Warnung. In der
+Vergleichsmatrix erscheint es nie als bester Vorschlag.
+
+**Begründung.** Stilles Weglassen wäre schlechter als eine Markierung: der
+Betreiber würde sich fragen, warum ein Symbol fehlt. Die Bezugsgröße der
+Abweichung ist der **kleinere** der beiden Preise, damit der Wert bei wirklich
+verschiedenen Assets groß wird (64 000 gegen 3 100 ergibt 1 960 %) statt sich
+gegen 100 % zu sättigen.
+
+**Folgen.** Ohne Mark-Preise bleibt die Prüfung unentschieden – dann wird weder
+zugestimmt noch abgelehnt, und die Oberfläche zeigt ein Fragezeichen. Die
+schärfere Preflight-Prüfung aus Abschnitt 6.2 bleibt davon unberührt; sie dient
+einem anderen Zweck (Ausführungsrisiko statt Asset-Identität).
+
+---
+
+## ADR-015 – Decimal wird in SQLite als Text abgelegt
+
+**Phase:** 2 · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** SQLAlchemys `Numeric` wird auf SQLite über `float` abgebildet.
+Genau davor soll dieses Projekt schützen.
+
+**Entscheidung.** Ein `TypeDecorator` legt jeden `Decimal` als Text ab und liest
+ihn als `Decimal` zurück. Der CSV-Export schreibt Beträge mit `format(d, "f")`
+aus, damit `0.000000000000000001` nicht als `1E-18` in der Tabellenkalkulation
+landet – wertgleich, aber je nach Gebietsschema als Text gelesen.
+
+**Begründung.** Ein Test hält fest, dass nicht nur der Zahlenwert, sondern auch
+die Stelligkeit den Weg durch die Datenbank übersteht.
+
+---
+
+## ADR-016 – Extended: Funding-Summen statt Einzelzahlungen, klar gekennzeichnet
+
+**Phase:** 2 · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** OFFEN-6 ist weiterhin offen: Extended belegt keinen Endpunkt für
+einzelne Funding-Zahlungen. Belegt ist nur die Summe je **geschlossener**
+Position in `realisedPnlBreakdown.fundingFees`
+(`GET /user/positions/history`).
+
+**Entscheidung.** Der Adapter meldet diese Summe als **eine** Zahlung je
+geschlossener Position, mit `confirmed=True` – sie stammt von der Börse, ist nur
+nicht nach Zeitpunkten aufgelöst. Für offene Positionen wird nichts erfunden.
+Das Modell `FundingPayment` trägt dafür das Feld `confirmed`; Journal, CSV und
+Oberfläche zeigen eine gerechnete Zahlung sichtbar als „gerechnet".
+
+**Begründung.** Eine Schätzung, die wie eine bestätigte Zahlung aussieht, macht
+das Journal wertlos – und das Journal ist die Grundlage für die Rechnung
+„Kosten pro Airdrop-Punkt".
+
+**Folgen.** Solange OFFEN-6 nicht geklärt ist, ist die laufende
+Funding-Anzeige bei Extended gröber als bei Lighter, wo `positionFunding`
+einzelne Zahlungen mit Zeitstempel, Rate und Positionsgröße liefert.
+
+---
+
+## ADR-017 – Lighter braucht für Kontodaten keine Signatur
+
+**Phase:** 2 · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** Es war offen, ob Phase 2 bei Lighter schon eine Signaturbibliothek
+erfordert.
+
+**Entscheidung.** Nein. `GET /api/v1/account?by=index&value=<index>` verlangt
+laut `openapi.json` keine Authentifizierung und liefert Positionen inklusive
+`liquidation_price` und `total_funding_paid_out`; bei
+`GET /api/v1/positionFunding` ist `authorization` optional. Für Phase 2 genügt
+damit der Account-Index, bei Extended der `X-Api-Key`-Header.
+
+**Begründung.** Kein Signieren heißt: keine Rust-Erweiterung, kein privater
+Schlüssel im Prozess, und der Adapter kann in Phase 2 nichts auslösen, selbst
+wenn er wollte. Die Signaturbibliotheken kommen erst in Phase 3, wenn Orders
+tatsächlich gesendet werden.
