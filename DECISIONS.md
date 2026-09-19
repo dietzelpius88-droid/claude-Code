@@ -546,3 +546,93 @@ Warnung, kein stilles Bestehen. Siehe `RESEARCH.md`, OFFEN-17.
 Wissenslücke. Ein möglicher Weg für Phase 4 ist der `Date`-Header der
 HTTP-Antwort; das ist ungenau, aber besser als nichts — und muss gegen die
 echte API geprüft werden, bevor es als Prüfung zählt.
+
+
+---
+
+## ADR-025 – Erkannte Positionen werden als Paar übernommen
+
+**Phase:** 3+ · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** Bis hierher waren es zwei getrennte Welten: `/api/positions`
+zeigte Paare, die aus Börsenpositionen erkannt wurden, `/api/pairs` die
+Einträge der Engine. Sie wussten nichts voneinander. Folge: ein geklicktes Paar
+hatte keinen Schließen-Knopf in seiner Karte, `funding_payments.pair_id` blieb
+immer leer, und die Frage „was hat ein Airdrop-Punkt gekostet" war nicht zu
+beantworten — obwohl sie der eigentliche Zweck des Journals ist.
+
+**Entscheidung.** Gehedgte Positionen ohne Datenbankeintrag werden übernommen,
+als Paar mit Herkunft `ADOPTED` statt `ENGINE`. Danach gibt es einen einzigen
+Codepfad. Ein **einzelnes** Bein wird nicht übernommen: eine ungesicherte
+Position soll auffallen, nicht stillschweigend zu einem Paar erklärt werden.
+
+**Folgen.** Ein übernommenes Paar hat keine bekannte Startzeit. Sie bleibt
+**leer** statt auf „jetzt" gesetzt zu werden — sonst fiele alles Funding von vor
+der Übernahme aus der Zuordnung, obwohl es zu dieser Position gehört. Haltedauer
+und realisierte APR bleiben dann offen, was der Wahrheit entspricht.
+
+Im Trockenlauf wird beim Schließen nichts wirklich glattgestellt. Die Position
+taucht deshalb gleich wieder als übernommenes Paar auf. Das ist korrekt und
+steht als Hinweis in der Oberfläche, statt es zu verstecken.
+
+---
+
+## ADR-026 – Geschlossen wird über Reduce-Only-Gegenorders
+
+**Phase:** 3+ · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** `close_pair` rief bisher `close_position(symbol)` auf. Dabei
+entsteht keine erfasste Gegenbuchung — also kein Fill mit Menge, Preis und
+Gebühr, und damit kein Preis-PnL.
+
+**Entscheidung.** Beim Schließen und beim Rollback stellt die Engine jedes Bein
+über eine **Reduce-Only-Marktorder** glatt, die durch dieselbe Erfassung läuft
+wie das Öffnen. `close_position` bleibt im Interface und im Kill Switch, wo die
+Größe unbekannt sein kann.
+
+**Begründung.** Ohne Gegenbuchung gibt es keine Ergebniszeile — und ohne
+Ergebniszeile keine Kosten pro Punkt.
+
+---
+
+## ADR-027 – Realisierte APR bezieht sich auf das Notional
+
+**Phase:** 3+ · **Status:** angenommen, mit Vorbehalt · **Datum:** 2026-09-19
+
+**Entscheidung.** Die realisierte APR eines geschlossenen Paares rechnet
+`Netto / Notional`, hochgerechnet über die Haltedauer.
+
+**Vorbehalt.** Mit Hebel ist die Rendite auf das **eingesetzte Kapital**
+(die hinterlegte Margin auf beiden Seiten) entsprechend höher. Die Oberfläche
+benennt den Bezug deshalb ausdrücklich. Sobald der Hebel je Paar festgehalten
+wird, lässt sich die margin-bezogene Rendite daneben stellen.
+
+---
+
+## ADR-028 – Zeitstempel aus SQLite werden als UTC gelesen
+
+**Phase:** 3+ · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** Geschrieben werden zeitzonenbewusste Zeitstempel, SQLite gibt sie
+naiv zurück. Die Subtraktion warf — und zwar bei **jedem** Aufruf von
+`/api/pairs` mit einem offenen Paar.
+
+**Entscheidung.** Ein naiver Zeitstempel aus der Datenbank wird beim Lesen als
+UTC interpretiert (`app/storage/zeit.py`). Alles im Projekt schreibt UTC, also
+ist das keine Annahme, sondern die Umkehrung des Schreibvorgangs.
+
+---
+
+## ADR-029 – „Neu ausrichten" rechnet beide Wege, entscheidet aber keinen
+
+**Phase:** 3+ · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** Ein Rest-Delta lässt sich abbauen, indem man das kleinere Bein
+aufstockt oder das größere verkleinert. Aufstocken braucht Margin und bringt
+mehr Volumen und Open Interest für die Punkte; Verkleinern gibt Margin frei und
+senkt beides. Welcher Weg richtig ist, hängt davon ab, worauf es dem Betreiber
+gerade ankommt.
+
+**Entscheidung (durch den Betreiber getroffen).** Das Werkzeug rechnet **beide**
+Wege durch — betroffene Börse, Ordergröße, geschätzte Gebühr, resultierende
+Größe und Notional — und führt keinen von sich aus aus.

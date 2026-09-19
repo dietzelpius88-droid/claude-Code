@@ -325,6 +325,10 @@ def _erweitere_account_service():
             ]
             fehlen = len(beine) < 2
 
+            # Zuordnung laufend, nicht erst beim Schliessen: sonst steht auf
+            # der Karte eines offenen Paares immer null Funding, obwohl die
+            # Zahlungen laengst im Journal liegen.
+            store.attribute_funding(paar.id)
             zahlungen = sum((z.amount for z in store.funding_for(paar.id)), Decimal(0))
 
             fills = store.fills_for(paar.id)

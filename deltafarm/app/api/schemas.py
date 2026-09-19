@@ -260,3 +260,39 @@ class PanicOut(BaseModel):
     closed_positions: int
     errors: list[str] = []
     dry_run: bool = True
+
+
+class RebalanceLegOut(BaseModel):
+    venue: str
+    side: str
+    size: Decimal
+    reduce_only: bool
+    estimated_fee: Optional[Decimal] = None
+    resulting_size: Decimal
+    resulting_notional: Decimal
+
+
+class RebalancePlanOut(BaseModel):
+    symbol: str
+    difference: Decimal
+    balanced: bool
+    increase: Optional[RebalanceLegOut] = None
+    decrease: Optional[RebalanceLegOut] = None
+    error: Optional[str] = None
+
+
+class RebalanceRequestIn(BaseModel):
+    action: str  # increase | decrease
+
+
+class SummaryOut(BaseModel):
+    """Kennzahlen fuer die Kopfzeile."""
+
+    total_equity: Decimal
+    # Netto-Funding seit 00:00 UTC. Der Kalendertag passt zu den
+    # Abrechnungszyklen der Boersen und laesst sich mit einem Kontoauszug
+    # abgleichen - anders als eine rollierende Spanne.
+    funding_today: Decimal
+    funding_today_confirmed: Decimal
+    day_start: datetime
+    open_pairs: int

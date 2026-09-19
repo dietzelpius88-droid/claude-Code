@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -17,8 +18,12 @@ from app.api.schemas import (
     PanicOut,
     PreviewOut,
     PreviewRequestIn,
+    RebalanceLegOut,
+    RebalancePlanOut,
+    RebalanceRequestIn,
     ResolveRequestIn,
     SizingOut,
+    SummaryOut,
     BestPairOut,
     DetectedPairOut,
     HealthOutModel,
@@ -36,6 +41,7 @@ from app.config import get_settings
 from app.core import symbols as sym
 from app.core.account import AccountService
 from app.core.preview import PreviewError
+from app.core.rebalance import RebalanceError
 from app.core.service import MarketDataService, Snapshot
 from app.core.trading import PreviewRequest, TradingService
 from app.models.domain import VenueStatus
@@ -599,4 +605,83 @@ async def panic(request: Request) -> PanicOut:
         closed_positions=ergebnis.closed_positions,
         errors=ergebnis.errors,
         dry_run=get_settings().dry_run,
+    )
+
+
+def _rebalance_leg(bein) -> Optional[RebalanceLegOut]:
+    if bein is None:
+        return None
+    return RebalanceLegOut(
+        venue=bein.venue,
+        side=bein.side.value,
+        size=bein.size,
+        reduce_only=bein.reduce_only,
+        estimated_fee=bein.estimated_fee,
+        resulting_size=bein.resulting_size,
+        resulting_notional=bein.resulting_notional,
+    )
+
+
+@router.get("/pairs/{pair_id}/rebalance", response_model=RebalancePlanOut)
+async def rebalance_preview(request: Request, pair_id: int) -> RebalancePlanOut:
+    """Beide Wege durchgerechnet - aufstocken oder verkleinern."""
+    try:
+        plan = await _trading(request).rebalance_plan(pair_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RebalanceError as exc:
+        return RebalancePlanOut(
+            symbol="", difference=Decimal(0), balanced=True, error=str(exc)
+        )
+
+    return RebalancePlanOut(
+        symbol=plan.symbol,
+        difference=plan.difference,
+        balanced=plan.balanced,
+        increase=_rebalance_leg(plan.increase),
+        decrease=_rebalance_leg(plan.decrease),
+    )
+
+
+@router.post("/pairs/{pair_id}/rebalance", response_model=ExecutionOut)
+async def rebalance_execute(
+    request: Request, pair_id: int, body: RebalanceRequestIn
+) -> ExecutionOut:
+    dienst = _trading(request)
+    try:
+        await dienst.rebalance(pair_id, action=body.action)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (RebalanceError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ExecutionOut(
+        pair_id=pair_id,
+        state=_store(request).get_state(pair_id).value,
+        detail="neu ausgerichtet",
+        dry_run=get_settings().dry_run,
+    )
+
+
+@router.get("/summary", response_model=SummaryOut)
+async def summary(request: Request) -> SummaryOut:
+    """Gesamtkapital und Netto-Funding des laufenden UTC-Tages."""
+    from datetime import datetime, time, timezone
+
+    tagesbeginn = datetime.combine(
+        datetime.now(timezone.utc).date(), time.min, tzinfo=timezone.utc
+    )
+
+    tagebuch = _journal(request)
+    kontostaende = await _account(request).balances()
+
+    return SummaryOut(
+        total_equity=sum((b.equity for b in kontostaende), Decimal(0)),
+        funding_today=tagebuch.funding_total(since=tagesbeginn),
+        # Getrennt ausgewiesen: gerechnete Betraege sind keine bestaetigten.
+        funding_today_confirmed=tagebuch.funding_total(
+            since=tagesbeginn, confirmed_only=True
+        ),
+        day_start=tagesbeginn,
+        open_pairs=len(_store(request).open_pairs()),
     )

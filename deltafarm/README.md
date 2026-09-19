@@ -35,11 +35,20 @@ Börsen, jeweils als Stundenrate und als APR, dazu der Netto-APR des besten
 Paares, die Richtung (wo long, wo short) und die Mindesthaltedauer bis zum
 Break-even.
 
-**Offene Positionen:** je Symbol eine Karte mit beiden Beinen, Einstieg und
-Mark-Preis, PnL, Rest-Delta in USD und Prozent, erhaltenem Funding, Haltedauer
-und einem Balken je Bein für den Abstand zur Liquidation. Ein Symbol mit nur
-einem offenen Bein wird deutlich als **NICHT GEHEDGT** markiert — das ist eine
-ungesicherte Richtungswette, keine delta-neutrale Position.
+**Offene Paare:** je Paar eine Karte mit beiden Beinen, Einstieg und
+Mark-Preis, PnL, Netto-Funding pro Stunde und als APR, erhaltenem Funding,
+gezahlten Gebühren, Rest-Delta, Haltedauer und einem Balken je Bein für den
+Abstand zur Liquidation. Dazu die Knöpfe **Schließen** und **Neu ausrichten**.
+
+Ein Symbol mit nur einem offenen Bein wird deutlich als **NICHT GEHEDGT**
+markiert — das ist eine ungesicherte Richtungswette. Gewarnt wird außerdem,
+wenn das Netto-Funding das Vorzeichen dreht, wenn die Kosten noch nicht
+eingespielt sind, und wenn zu einem geführten Paar die Positionen an der Börse
+fehlen.
+
+**Abgeschlossene Paare:** je Paar eine Ergebniszeile mit Funding, Gebühren,
+Preis-PnL, Netto, Haltedauer und realisierter APR — die Grundlage, um die
+Kosten pro Airdrop-Punkt nachzurechnen.
 
 **Paar eröffnen** (Dialog aus der Vergleichstabelle): Notional, maximaler
 Slippage, Hebel je Seite und welches Bein zuerst ausgeführt wird. Darunter die
@@ -51,7 +60,9 @@ zum Break-even. Der Ausführen-Knopf bleibt gesperrt, solange eine Prüfung rot 
 filterbar, mit CSV-Export.
 
 In der Kopfzeile stehen dauerhaft Umgebung (TESTNET/MAINNET), Modus
-(DRY RUN/LIVE), Gesamtkapital und der Verbindungsstatus beider Börsen.
+(DRY RUN/LIVE), Gesamtkapital, das Netto-Funding des laufenden UTC-Tages und
+der Verbindungsstatus beider Börsen. Ein Stern hinter dem Tagesfunding heißt,
+dass ein Teil davon gerechnet und nicht von der Börse bestätigt ist.
 
 ## Sicherheit
 
@@ -160,7 +171,29 @@ GET  /api/pairs                offene und geschlossene Paare
 POST /api/pairs/{id}/close     Paar beidseitig schließen
 POST /api/pairs/{id}/resolve   UNHEDGED auflösen: hedge | rollback
 POST /api/panic                Kill Switch
+GET  /api/pairs/{id}/rebalance beide Wege, ein Rest-Delta abzubauen
+POST /api/pairs/{id}/rebalance einen davon ausführen
+GET  /api/summary              Kapital und Netto-Funding des UTC-Tages
 ```
+
+## Von Hand eröffnete Paare
+
+Positionen, die ein Paar bilden und noch keinen Eintrag in der Datenbank haben,
+werden **übernommen** — als Paar mit Herkunft `ADOPTED` statt `ENGINE`. Danach
+gibt es nur einen Codepfad: Funding-Zuordnung, Schließen und Ergebniszeile
+funktionieren für von Hand eröffnete Paare wie für geklickte.
+
+Ein **einzelnes** Bein wird nicht übernommen. Eine ungesicherte Position soll
+auffallen, nicht stillschweigend zu einem Paar erklärt werden.
+
+Ein übernommenes Paar hat keine bekannte Startzeit — die Börse nennt sie nicht
+immer. Sie bleibt dann leer statt auf „jetzt" gesetzt zu werden, sonst fiele
+alles Funding von vor der Übernahme aus der Zuordnung. Haltedauer und
+realisierte APR bleiben in dem Fall offen.
+
+**Im Trockenlauf** wird beim Schließen nichts wirklich glattgestellt. Die
+Position taucht deshalb gleich wieder als übernommenes Paar auf; die Oberfläche
+sagt das dazu.
 
 ## Ausführung und ihre Absicherungen
 

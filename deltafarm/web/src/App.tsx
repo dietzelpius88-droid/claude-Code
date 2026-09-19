@@ -1,12 +1,11 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  holeBalances,
   holeFunding,
   holeHealth,
   holeJournal,
   holePairs,
-  holePositionen,
+  holeSummary,
   holeVenues,
 } from "./api";
 import FundingTable from "./components/FundingTable";
@@ -27,8 +26,7 @@ export default function App() {
   const health = useQuery({ queryKey: ["health"], queryFn: holeHealth });
   const venues = useQuery({ queryKey: ["venues"], queryFn: holeVenues });
   const funding = useQuery({ queryKey: ["funding"], queryFn: holeFunding });
-  const balances = useQuery({ queryKey: ["balances"], queryFn: holeBalances });
-  const positionen = useQuery({ queryKey: ["positionen"], queryFn: holePositionen });
+  const summary = useQuery({ queryKey: ["summary"], queryFn: holeSummary });
   // Paare oefter abfragen: ein UNHEDGED-Zustand soll schnell sichtbar werden.
   const pairs = useQuery({ queryKey: ["pairs"], queryFn: holePairs, refetchInterval: 5000 });
   const journal = useQuery({
@@ -44,7 +42,7 @@ export default function App() {
       <Header
         health={health.data}
         venues={venues.data}
-        balances={balances.data}
+        summary={summary.data}
         stand={funding.data?.as_of}
         onKillSwitch={allesNeu}
       />
@@ -86,7 +84,13 @@ export default function App() {
               }
             />
           )}
-          {positionen.data && <Positions paare={positionen.data} />}
+          {pairs.data && (
+            <Positions
+              paare={pairs.data}
+              live={health.data?.dry_run === false}
+              onAenderung={allesNeu}
+            />
+          )}
         </>
       ) : (
         <Journal eintraege={journal.data ?? []} />
@@ -97,6 +101,7 @@ export default function App() {
           symbol={dialog.symbol}
           longVenue={dialog.longVenue}
           shortVenue={dialog.shortVenue}
+          live={health.data?.dry_run === false}
           onSchliessen={() => setDialog(null)}
           onGeoeffnet={allesNeu}
         />

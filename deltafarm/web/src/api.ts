@@ -171,23 +171,82 @@ export type ExecutionOut = {
   dry_run: boolean;
 };
 
+export type PairLeg = {
+  venue: string;
+  side: string;
+  target_size: string | null;
+  filled_size: string | null;
+  avg_price: string | null;
+  status: string;
+  // Live-Werte, nur solange die Position offen ist
+  mark_price?: string;
+  entry_price?: string;
+  notional?: string;
+  unrealised_pnl?: string;
+  liquidation_price?: string | null;
+  liquidation_distance?: string | null;
+  health?: "GREEN" | "YELLOW" | "RED";
+};
+
 export type PairRow = {
   id: number;
   symbol: string;
   long_venue: string;
   short_venue: string;
   status: string;
+  // ENGINE = über die Vorschau eröffnet, ADOPTED = übernommen
+  source: string;
   notional_usd: string | null;
   opened_at: string | null;
   closed_at: string | null;
-  legs: Array<{
-    venue: string;
-    side: string;
-    target_size: string | null;
-    filled_size: string | null;
-    avg_price: string | null;
-    status: string;
-  }>;
+  legs: PairLeg[];
+
+  net_delta_usd: string | null;
+  net_delta_pct: string | null;
+  combined_pnl: string | null;
+  funding_received: string | null;
+  fees_paid: string | null;
+  fees_known: boolean;
+  net_funding_hourly: string | null;
+  net_funding_apr: string | null;
+  holding_hours: string | null;
+  level: "GREEN" | "YELLOW" | "RED" | null;
+  hedged: boolean | null;
+
+  funding_negative: boolean;
+  costs_recovered: boolean | null;
+  positions_missing: boolean;
+
+  price_pnl: string | null;
+  net_result: string | null;
+  realized_apr: string | null;
+};
+
+export type RebalanceLeg = {
+  venue: string;
+  side: string;
+  size: string;
+  reduce_only: boolean;
+  estimated_fee: string | null;
+  resulting_size: string;
+  resulting_notional: string;
+};
+
+export type RebalancePlan = {
+  symbol: string;
+  difference: string;
+  balanced: boolean;
+  increase: RebalanceLeg | null;
+  decrease: RebalanceLeg | null;
+  error: string | null;
+};
+
+export type Summary = {
+  total_equity: string;
+  funding_today: string;
+  funding_today_confirmed: string;
+  day_start: string;
+  open_pairs: number;
 };
 
 export type PanicOut = {
@@ -230,3 +289,7 @@ export const schliessePaar = (id: number) => sende<ExecutionOut>(`/api/pairs/${i
 export const loeseAuf = (id: number, action: "hedge" | "rollback") =>
   sende<ExecutionOut>(`/api/pairs/${id}/resolve`, { action });
 export const killSwitch = () => sende<PanicOut>("/api/panic");
+export const holeSummary = () => hole<Summary>("/api/summary");
+export const holeAusrichtung = (id: number) => hole<RebalancePlan>(`/api/pairs/${id}/rebalance`);
+export const richteAus = (id: number, action: "increase" | "decrease") =>
+  sende<ExecutionOut>(`/api/pairs/${id}/rebalance`, { action });

@@ -269,3 +269,26 @@ def test_haltedauer_ueberlebt_den_weg_durch_die_datenbank():
 
     assert ansicht.holding_hours is not None
     assert ansicht.holding_hours >= 0
+
+
+def test_funding_wird_auch_bei_offenem_paar_zugeordnet():
+    """Sonst steht auf der Karte eines offenen Paares immer null Funding.
+
+    Die Zahlungen liegen laengst im Journal - sie waren nur keinem Paar
+    zugeordnet, weil das bisher erst beim Schliessen geschah.
+    """
+    store, journal = _umgebung()
+    dienst = AccountService([], journal=journal)
+    positionen = [_pos("lighter", Side.LONG, liq="40000"), _pos("extended", Side.SHORT, liq="90000")]
+    dienst.adopt_open_pairs(store, positionen)
+
+    journal.record_funding_payments([
+        FundingPayment(
+            venue="extended", symbol="BTC-PERP", amount=Decimal("2.75"),
+            timestamp=JETZT, external_id="offen-1",
+        )
+    ])
+
+    # Ohne ausdruecklichen attribute_funding-Aufruf von aussen.
+    ansicht = dienst.build_pair_views(store, positionen, funding_rates=RATEN)[0]
+    assert ansicht.funding_received == Decimal("2.75")

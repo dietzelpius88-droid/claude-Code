@@ -265,3 +265,75 @@ def test_vorschau_und_ausfuehrung_stehen_im_journal(client: TestClient):
     arten = {e["kind"] for e in client.get("/api/journal").json()}
     assert "vorschau" in arten
     assert "zustand" in arten
+
+
+# --- Neu ausrichten -------------------------------------------------------
+
+def test_ausrichtung_zeigt_beide_wege(tmp_path):
+    """Bei ungleichen Beinen rechnet das Werkzeug beide Wege durch.
+
+    Teilfuellung des **zweiten** Beins: das erste steht mit 0,1, das zweite
+    nur mit 0,05. Eine Teilfuellung des ersten Beins ergaebe kein Delta - die
+    Engine passt die Gegenseite dann bereits an.
+    """
+    adapters = _adapters(extended={"fill_ratio": Decimal("0.5")})
+    with TestClient(
+        create_app(adapters=adapters, start_background=False, db_path=str(tmp_path / "r.db"))
+    ) as c:
+        token = c.post("/api/pairs/preview", json=VORSCHAU).json()["token"]
+        ergebnis = c.post("/api/pairs/open", json={"token": token}).json()
+
+        plan = c.get(f"/api/pairs/{ergebnis['pair_id']}/rebalance").json()
+
+        assert plan["balanced"] is False
+        assert plan["increase"] is not None
+        assert plan["decrease"] is not None
+        # Aufstocken vergroessert, Verkleinern verkleinert die Position.
+        assert Decimal(plan["increase"]["resulting_size"]) > Decimal(
+            plan["decrease"]["resulting_size"]
+        )
+
+
+def test_ausgeglichenes_paar_braucht_keine_ausrichtung(client: TestClient):
+    token = client.post("/api/pairs/preview", json=VORSCHAU).json()["token"]
+    pair_id = client.post("/api/pairs/open", json={"token": token}).json()["pair_id"]
+
+    plan = client.get(f"/api/pairs/{pair_id}/rebalance").json()
+    assert plan["balanced"] is True
+
+
+def test_unbekannte_ausrichtungsaktion_wird_abgelehnt(client: TestClient):
+    token = client.post("/api/pairs/preview", json=VORSCHAU).json()["token"]
+    pair_id = client.post("/api/pairs/open", json={"token": token}).json()["pair_id"]
+
+    antwort = client.post(f"/api/pairs/{pair_id}/rebalance", json={"action": "quatsch"})
+    assert antwort.status_code == 400
+
+
+# --- Zusammenfassung ------------------------------------------------------
+
+def test_zusammenfassung_nennt_kapital_und_tagesfunding(client: TestClient):
+    daten = client.get("/api/summary").json()
+
+    assert Decimal(daten["total_equity"]) == Decimal(200000)  # zwei Boersen
+    assert daten["day_start"].endswith("Z") or "T00:00" in daten["day_start"]
+    assert Decimal(daten["funding_today"]) == Decimal(0)
+
+
+def test_tagesfunding_trennt_gerechnet_von_bestaetigt(client: TestClient):
+    from datetime import datetime, timezone
+
+    from app.models.domain import FundingPayment
+
+    tagebuch = client.app.state.journal
+    jetzt = datetime.now(timezone.utc)
+    tagebuch.record_funding_payments([
+        FundingPayment(venue="lighter", symbol="BTC-PERP", amount=Decimal("3.00"),
+                       timestamp=jetzt, external_id="b1", confirmed=True),
+        FundingPayment(venue="extended", symbol="BTC-PERP", amount=Decimal("1.00"),
+                       timestamp=jetzt, external_id="b2", confirmed=False),
+    ])
+
+    daten = client.get("/api/summary").json()
+    assert Decimal(daten["funding_today"]) == Decimal("4.00")
+    assert Decimal(daten["funding_today_confirmed"]) == Decimal("3.00")
