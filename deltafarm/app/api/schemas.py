@@ -212,15 +212,47 @@ class ExecutionOut(BaseModel):
 
 
 class PairOut(BaseModel):
+    """Ein Paar mit allem, was die Karte in Bereich C braucht.
+
+    Fuehrt Datenbankeintrag, offene Positionen, zugeordnetes Funding und
+    Gebuehren zusammen - unabhaengig davon, ob das Paar ueber die Vorschau
+    eroeffnet oder aus offenen Positionen uebernommen wurde.
+    """
+
     id: int
     symbol: str
     long_venue: str
     short_venue: str
     status: str
+    # ENGINE = ueber die Vorschau eroeffnet, ADOPTED = uebernommen
+    source: str = "ENGINE"
     notional_usd: Optional[Decimal] = None
     opened_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
     legs: list[dict] = []
+
+    # Live-Kennzahlen (nur bei offenen Paaren gefuellt)
+    net_delta_usd: Optional[Decimal] = None
+    net_delta_pct: Optional[Decimal] = None
+    combined_pnl: Optional[Decimal] = None
+    funding_received: Optional[Decimal] = None
+    fees_paid: Optional[Decimal] = None
+    fees_known: bool = False
+    net_funding_hourly: Optional[Decimal] = None
+    net_funding_apr: Optional[Decimal] = None
+    holding_hours: Optional[Decimal] = None
+    level: Optional[str] = None
+    hedged: Optional[bool] = None
+
+    # Warnungen (Auftrag 6.4)
+    funding_negative: bool = False
+    costs_recovered: Optional[bool] = None
+    positions_missing: bool = False
+
+    # Endergebnis (Auftrag 6.5), nur bei geschlossenen Paaren
+    price_pnl: Optional[Decimal] = None
+    net_result: Optional[Decimal] = None
+    realized_apr: Optional[Decimal] = None
 
 
 class PanicOut(BaseModel):

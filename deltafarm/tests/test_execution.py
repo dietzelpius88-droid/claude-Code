@@ -196,7 +196,12 @@ async def test_rollback_schliesst_das_erste_bein():
     nachher = await motor.resolve_unhedged(ergebnis.pair_id, action="rollback")
 
     assert nachher.state is PairState.CLOSED
-    assert lang.closed_positions == ["BTC-PERP"]
+    # Geschlossen wird ueber eine Reduce-Only-Gegenorder, nicht ueber
+    # close_position - nur so entsteht ein Fill fuer die Ergebnisrechnung.
+    glattstellung = lang.placed_orders[-1]
+    assert glattstellung.reduce_only is True
+    assert glattstellung.side is Side.SHORT  # Gegenseite zum Long
+    assert glattstellung.size == Decimal("0.1")
 
 
 async def test_unbekannte_aktion_wird_abgelehnt():
@@ -212,7 +217,7 @@ async def test_auto_rollback_greift_nur_wenn_eingeschaltet():
     ergebnis = await motor.open_pair(_plan(auto_rollback=True))
 
     assert ergebnis.state is PairState.CLOSED
-    assert lang.closed_positions == ["BTC-PERP"]
+    assert lang.placed_orders[-1].reduce_only is True
 
 
 # --- Schliessen -----------------------------------------------------------
@@ -224,8 +229,11 @@ async def test_paar_schliessen_schliesst_beide_beine():
     nachher = await motor.close_pair(ergebnis.pair_id)
 
     assert nachher.state is PairState.CLOSED
-    assert lang.closed_positions == ["BTC-PERP"]
-    assert kurz.closed_positions == ["BTC-PERP"]
+    # Je Bein eine Eroeffnungs- und eine Glattstellungsorder.
+    assert len(lang.placed_orders) == 2
+    assert len(kurz.placed_orders) == 2
+    assert lang.placed_orders[1].reduce_only is True
+    assert kurz.placed_orders[1].reduce_only is True
 
 
 async def test_schliessen_eines_unbekannten_paares_wirft():
@@ -369,3 +377,60 @@ async def test_kill_switch_greift_auch_ohne_funktionierende_positionsabfrage():
     assert "BTC-PERP" in kurz.closed_positions
     assert nachher.closed_positions == 2
     assert store.get_state(ergebnis.pair_id) is PairState.CLOSED
+
+
+# --- Ergebnisrechnung beim Schliessen (Auftrag 6.5) ----------------------
+
+async def test_schliessen_erzeugt_eine_ergebniszeile():
+    """Ohne diese Zeile laesst sich nicht sagen, was ein Punkt gekostet hat."""
+    motor, store, lang, kurz = _umgebung()
+    ergebnis = await motor.open_pair(_plan())
+    await motor.close_pair(ergebnis.pair_id)
+
+    paar = store.get_pair(ergebnis.pair_id)
+    assert paar.net_result is not None
+    assert paar.fees_paid is not None
+    assert paar.holding_hours is not None
+
+    eintraege = [e for e in motor.journal.events(kinds=["paar_ergebnis"])]
+    assert len(eintraege) == 1
+    assert "Netto" in eintraege[0].message
+
+
+async def test_gegenbuchung_landet_als_fill_in_der_datenbank():
+    motor, store, lang, kurz = _umgebung()
+    ergebnis = await motor.open_pair(_plan())
+    await motor.close_pair(ergebnis.pair_id)
+
+    fills = store.fills_for(ergebnis.pair_id)
+    assert len(fills) == 4  # je Bein auf und zu
+    assert sum(1 for f in fills if f["closing"]) == 2
+
+
+async def test_funding_wird_dem_paar_zugeordnet():
+    """Ohne Zuordnung bleibt funding_payments.pair_id leer.
+
+    Dann laesst sich nicht sagen, welches Paar welches Funding gebracht hat.
+    """
+    from datetime import datetime, timezone
+
+    from app.models.domain import FundingPayment
+
+    motor, store, lang, kurz = _umgebung()
+    ergebnis = await motor.open_pair(_plan())
+
+    motor.journal.record_funding_payments([
+        FundingPayment(
+            venue="lighter",
+            symbol="BTC-PERP",
+            amount=Decimal("3.25"),
+            timestamp=datetime.now(timezone.utc),
+            external_id="f1",
+        )
+    ])
+
+    await motor.close_pair(ergebnis.pair_id)
+
+    zugeordnet = store.funding_for(ergebnis.pair_id)
+    assert [z.amount for z in zugeordnet] == [Decimal("3.25")]
+    assert store.get_pair(ergebnis.pair_id).funding_received == Decimal("3.25")

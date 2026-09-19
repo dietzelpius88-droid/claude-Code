@@ -459,9 +459,33 @@ async def pairs_open(request: Request, body: OpenRequestIn) -> ExecutionOut:
 
 @router.get("/pairs", response_model=list[PairOut])
 async def pairs(request: Request) -> list[PairOut]:
+    """Alle Paare - offene mit Live-Kennzahlen, geschlossene mit Ergebnis.
+
+    Positionen, die ein Paar bilden und noch keinen Eintrag haben, werden
+    dabei uebernommen. Danach gibt es nur einen Codepfad: ein von Hand
+    eroeffnetes Paar verhaelt sich wie ein geklicktes.
+    """
     speicher = _store(request)
+    konto = _account(request)
+
+    positionen = await konto.positions()
+    konto.adopt_open_pairs(speicher, positionen)
+
+    # Aktuelle Raten aus dem zwischengespeicherten Marktdatenstand.
+    snapshot = _service(request).last_snapshot
+    raten = (
+        {(f.venue, f.symbol): f.rate_hourly for f in snapshot.funding} if snapshot else {}
+    )
+    ansichten = {
+        a.pair_id: a
+        for a in konto.build_pair_views(
+            speicher, positionen, funding_rates=raten, balances=await konto.balances()
+        )
+    }
+
     ergebnis: list[PairOut] = []
     for paar in speicher.all_pairs():
+        a = ansichten.get(paar.id)
         ergebnis.append(
             PairOut(
                 id=paar.id,
@@ -469,6 +493,7 @@ async def pairs(request: Request) -> list[PairOut]:
                 long_venue=paar.long_venue,
                 short_venue=paar.short_venue,
                 status=paar.status,
+                source=paar.source,
                 notional_usd=paar.notional_usd,
                 opened_at=paar.opened_at,
                 closed_at=paar.closed_at,
@@ -480,12 +505,58 @@ async def pairs(request: Request) -> list[PairOut]:
                         "filled_size": str(b.filled_size) if b.filled_size is not None else None,
                         "avg_price": str(b.avg_price) if b.avg_price is not None else None,
                         "status": b.status,
+                        # Live-Werte, sofern die Position offen ist
+                        **_bein_live(a, b.venue),
                     }
                     for b in speicher.legs(paar.id)
                 ],
+                net_delta_usd=a.net_delta_usd if a else None,
+                net_delta_pct=a.net_delta_pct if a else None,
+                combined_pnl=a.combined_pnl if a else None,
+                funding_received=a.funding_received if a else paar.funding_received,
+                fees_paid=a.fees_paid if a else paar.fees_paid,
+                fees_known=a.fees_known if a else paar.fees_paid is not None,
+                net_funding_hourly=a.net_funding_hourly if a else None,
+                net_funding_apr=a.net_funding_apr if a else None,
+                holding_hours=a.holding_hours if a else paar.holding_hours,
+                level=a.level.value if a else None,
+                hedged=a.hedged if a else None,
+                funding_negative=a.funding_negative if a else False,
+                costs_recovered=a.costs_recovered if a else None,
+                positions_missing=a.positions_missing if a else False,
+                price_pnl=paar.price_pnl,
+                net_result=paar.net_result,
+                realized_apr=paar.realized_apr,
             )
         )
     return ergebnis
+
+
+def _bein_live(ansicht, venue: str) -> dict:
+    """Live-Werte eines Beins, falls die Position offen ist."""
+    if ansicht is None:
+        return {}
+    for a in ansicht.legs:
+        if a.position.venue != venue:
+            continue
+        return {
+            "mark_price": str(a.position.mark_price),
+            "entry_price": str(a.position.entry_price),
+            "notional": str(a.position.notional),
+            "unrealised_pnl": str(a.position.unrealised_pnl),
+            "liquidation_price": (
+                str(a.position.liquidation_price)
+                if a.position.liquidation_price is not None
+                else None
+            ),
+            "liquidation_distance": (
+                str(a.health.liquidation_distance)
+                if a.health.liquidation_distance is not None
+                else None
+            ),
+            "health": a.health.level.value,
+        }
+    return {}
 
 
 @router.post("/pairs/{pair_id}/close", response_model=ExecutionOut)

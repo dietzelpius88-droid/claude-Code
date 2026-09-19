@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.domain import OrderRequest, OrderResult, PairState, Side
 from app.storage.db import session_scope
-from app.storage.models import Event, Fill, Leg, Order, Pair
+from app.storage.models import Event, Fill, FundingPaymentRow, Leg, Order, Pair, PairSource
 
 LOG = structlog.get_logger(__name__)
 
@@ -82,6 +82,195 @@ class PairStore:
                 )
             )
             return paar.id
+
+    def adopt_pair(
+        self,
+        *,
+        symbol: str,
+        long_venue: str,
+        short_venue: str,
+        notional_usd: Decimal,
+        legs: dict[str, Decimal],
+        opened_at: Optional[datetime] = None,
+    ) -> int:
+        """Uebernimmt ein Paar, das an den Boersen bereits offen ist.
+
+        Damit bekommen von Hand eroeffnete Paare denselben Codepfad wie
+        geklickte: Funding-Zuordnung, Schliessen-Knopf und Ergebniszeile.
+        Die Fuellmengen kommen aus den Boersenpositionen, nicht aus Orders -
+        die kennen wir nicht. Dasselbe gilt fuer den Eroeffnungszeitpunkt:
+        nennt ihn die Boerse nicht, bleibt er **leer** statt auf "jetzt"
+        gesetzt zu werden. Sonst fiele alles Funding von vor der Uebernahme
+        aus der Zuordnung - obwohl es zu dieser Position gehoert. Haltedauer
+        und realisierte APR bleiben dann offen, was der Wahrheit entspricht.
+        """
+        with session_scope(self._sessions) as s:
+            paar = Pair(
+                symbol=symbol,
+                long_venue=long_venue,
+                short_venue=short_venue,
+                status=PairState.OPEN.value,
+                source=PairSource.ADOPTED.value,
+                notional_usd=notional_usd,
+                opened_at=opened_at,
+            )
+            s.add(paar)
+            s.flush()
+
+            for venue, seite in ((long_venue, Side.LONG), (short_venue, Side.SHORT)):
+                groesse = legs.get(venue, Decimal(0))
+                s.add(
+                    Leg(
+                        pair_id=paar.id,
+                        venue=venue,
+                        symbol=symbol,
+                        side=seite.value,
+                        target_size=groesse,
+                        filled_size=groesse,
+                        status=PairState.OPEN.value,
+                    )
+                )
+
+            s.add(
+                Event(
+                    kind="paar_uebernommen",
+                    symbol=symbol,
+                    pair_id=paar.id,
+                    message=f"{symbol}: offene Positionen auf {long_venue} und {short_venue} "
+                    "als Paar uebernommen (nicht ueber die Vorschau eroeffnet)",
+                    payload=json.dumps({k: str(v) for k, v in legs.items()}),
+                )
+            )
+            return paar.id
+
+    def open_pair_for(self, symbol: str) -> Optional[Pair]:
+        """Das offene Paar zu einem Symbol, falls es eines gibt."""
+        with session_scope(self._sessions) as s:
+            return s.execute(
+                select(Pair).where(
+                    Pair.symbol == symbol,
+                    Pair.status.in_([PairState.OPEN.value, PairState.UNHEDGED.value]),
+                )
+            ).scalars().first()
+
+    def attribute_funding(self, pair_id: int) -> int:
+        """Ordnet noch nicht zugeordnete Funding-Zahlungen diesem Paar zu.
+
+        Zugeordnet wird nach Boerse, Symbol und Zeitfenster. Ohne das bleibt
+        funding_payments.pair_id leer - und die Frage, was ein Paar gebracht
+        hat, unbeantwortbar.
+        """
+        with session_scope(self._sessions) as s:
+            paar = s.get(Pair, pair_id)
+            if paar is None:
+                raise KeyError(f"Paar {pair_id} nicht gefunden.")
+
+            bedingungen = [
+                FundingPaymentRow.pair_id.is_(None),
+                FundingPaymentRow.symbol == paar.symbol,
+                FundingPaymentRow.venue.in_([paar.long_venue, paar.short_venue]),
+            ]
+            if paar.opened_at is not None:
+                bedingungen.append(FundingPaymentRow.timestamp >= paar.opened_at)
+            if paar.closed_at is not None:
+                bedingungen.append(FundingPaymentRow.timestamp <= paar.closed_at)
+
+            zeilen = list(s.execute(select(FundingPaymentRow).where(*bedingungen)).scalars())
+            for z in zeilen:
+                z.pair_id = pair_id
+            return len(zeilen)
+
+    def funding_for(self, pair_id: int) -> list[FundingPaymentRow]:
+        with session_scope(self._sessions) as s:
+            return list(
+                s.execute(
+                    select(FundingPaymentRow)
+                    .where(FundingPaymentRow.pair_id == pair_id)
+                    .order_by(FundingPaymentRow.timestamp)
+                ).scalars()
+            )
+
+    def fills_for(self, pair_id: int) -> list[dict]:
+        """Fills des Paares, aufbereitet fuer die Ergebnisrechnung."""
+        beine = {b.id: b for b in self.legs(pair_id)}
+        with session_scope(self._sessions) as s:
+            orders = list(
+                s.execute(select(Order).where(Order.leg_id.in_(beine))).scalars()
+            )
+            order_nach_id = {o.id: o for o in orders}
+            fills = list(
+                s.execute(select(Fill).where(Fill.order_id.in_(order_nach_id))).scalars()
+            )
+
+        ergebnis: list[dict] = []
+        for f in fills:
+            order = order_nach_id.get(f.order_id)
+            if order is None:
+                continue
+            bein = beine.get(order.leg_id)
+            if bein is None:
+                continue
+            # Eine Order, deren Seite der des Beins entgegensteht, schliesst es.
+            schliessend = order.side != bein.side
+            ergebnis.append(
+                {
+                    "venue": f.venue,
+                    "side": Side(bein.side),
+                    "size": f.size,
+                    "price": f.price,
+                    "fee": f.fee,
+                    "closing": schliessend,
+                }
+            )
+        return ergebnis
+
+    def save_result(self, pair_id: int, ergebnis) -> None:
+        """Haelt das Endergebnis am Paar fest (Auftrag 6.5)."""
+        with session_scope(self._sessions) as s:
+            paar = s.get(Pair, pair_id)
+            if paar is None:
+                raise KeyError(f"Paar {pair_id} nicht gefunden.")
+            paar.funding_received = ergebnis.funding_received
+            paar.fees_paid = ergebnis.fees_paid
+            paar.price_pnl = ergebnis.price_pnl
+            paar.net_result = ergebnis.net_result
+            paar.realized_apr = ergebnis.realized_apr
+            paar.holding_hours = ergebnis.holding_hours
+
+            s.add(
+                Event(
+                    kind="paar_ergebnis",
+                    symbol=paar.symbol,
+                    pair_id=pair_id,
+                    message=(
+                        f"{paar.symbol} geschlossen: Funding {ergebnis.funding_received}, "
+                        f"Gebuehren {ergebnis.fees_paid}, Preis-PnL {ergebnis.price_pnl}, "
+                        f"Netto {ergebnis.net_result}, gehalten "
+                        f"{ergebnis.holding_hours.quantize(Decimal('0.1'))} h"
+                        + (
+                            f", realisierte APR {ergebnis.realized_apr:.2%}"
+                            if ergebnis.realized_apr is not None
+                            else ""
+                        )
+                        + (" (Gebuehren unvollstaendig)" if ergebnis.fees_incomplete else "")
+                    ),
+                    payload=json.dumps(
+                        {
+                            "funding_received": str(ergebnis.funding_received),
+                            "fees_paid": str(ergebnis.fees_paid),
+                            "price_pnl": str(ergebnis.price_pnl),
+                            "net_result": str(ergebnis.net_result),
+                            "holding_hours": str(ergebnis.holding_hours),
+                            "realized_apr": (
+                                str(ergebnis.realized_apr)
+                                if ergebnis.realized_apr is not None
+                                else None
+                            ),
+                            "fees_incomplete": ergebnis.fees_incomplete,
+                        }
+                    ),
+                )
+            )
 
     # --- Zustand ----------------------------------------------------------
 

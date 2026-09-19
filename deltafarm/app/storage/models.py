@@ -8,6 +8,7 @@ TypeDecorator unten haelt die Werte exakt.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import StrEnum
 from decimal import Decimal
 from typing import Optional
 
@@ -23,6 +24,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
 
 
 class DecimalText(TypeDecorator):
@@ -60,8 +62,19 @@ class Venue(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
+class PairSource(StrEnum):
+    """Woher ein Paar stammt."""
+
+    # Ueber die Vorschau eroeffnet.
+    ENGINE = "ENGINE"
+    # Aus offenen Boersenpositionen erkannt und uebernommen, damit auch von
+    # Hand eroeffnete Paare Funding-Zuordnung, Schliessen-Knopf und
+    # Ergebniszeile bekommen.
+    ADOPTED = "ADOPTED"
+
+
 class Pair(Base):
-    """Ein delta-neutrales Paar. Ab Phase 3 gefuellt."""
+    """Ein delta-neutrales Paar."""
 
     __tablename__ = "pairs"
 
@@ -70,10 +83,21 @@ class Pair(Base):
     long_venue: Mapped[str] = mapped_column(String(32))
     short_venue: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(24), default="PLANNED")
+    source: Mapped[str] = mapped_column(String(16), default=PairSource.ENGINE.value)
     notional_usd: Mapped[Optional[Decimal]] = mapped_column(DecimalText(64), nullable=True)
     opened_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+    # Endergebnis, beim Schliessen einmal gerechnet und festgehalten
+    # (Auftrag 6.5). Als Momentaufnahme, damit die Journalzeile auch dann
+    # stimmt, wenn sich spaeter etwas nachtraeglich aendert.
+    funding_received: Mapped[Optional[Decimal]] = mapped_column(DecimalText(64), nullable=True)
+    fees_paid: Mapped[Optional[Decimal]] = mapped_column(DecimalText(64), nullable=True)
+    price_pnl: Mapped[Optional[Decimal]] = mapped_column(DecimalText(64), nullable=True)
+    net_result: Mapped[Optional[Decimal]] = mapped_column(DecimalText(64), nullable=True)
+    realized_apr: Mapped[Optional[Decimal]] = mapped_column(DecimalText(64), nullable=True)
+    holding_hours: Mapped[Optional[Decimal]] = mapped_column(DecimalText(64), nullable=True)
 
     legs: Mapped[list["Leg"]] = relationship(back_populates="pair", cascade="all, delete-orphan")
 

@@ -32,7 +32,9 @@ from app.models.domain import (
     PairState,
     Side,
 )
+from app.core.results import ResultInput, compute_pair_result
 from app.storage.pairs import PairStore
+from app.storage.zeit import als_utc
 
 LOG = structlog.get_logger(__name__)
 
@@ -318,9 +320,11 @@ class ExecutionEngine:
         fehler: list[str] = []
         for bein in offen:
             try:
-                await self._adapter(bein.venue).close_position(paar.symbol)
+                problem = await self._close_leg(pair_id, paar.symbol, bein)
             except (AdapterError, KeyError) as exc:
-                fehler.append(f"{bein.venue}: {exc}")
+                problem = f"{bein.venue}: {exc}"
+            if problem:
+                fehler.append(problem)
 
         if fehler:
             self._store.set_state(
@@ -329,9 +333,64 @@ class ExecutionEngine:
             return ExecutionOutcome(pair_id, PairState.UNHEDGED, "; ".join(fehler), gefuellt)
 
         self._store.set_state(pair_id, PairState.CLOSED, message="Rollback abgeschlossen")
+        self._finalise(pair_id)
         return ExecutionOutcome(pair_id, PairState.CLOSED, "zurückgerollt", gefuellt)
 
     # --- Schliessen -------------------------------------------------------
+
+    async def _close_leg(self, pair_id: int, symbol: str, bein) -> Optional[str]:
+        """Schliesst ein Bein ueber eine Reduce-Only-Order.
+
+        Nicht ueber close_position(symbol): die Order laeuft durch dieselbe
+        Erfassung wie das Oeffnen, damit Menge, Preis und Gebuehr als Fill in
+        der Datenbank landen. Ohne diese Gegenbuchung gaebe es spaeter kein
+        Preis-PnL und damit keine Ergebniszeile.
+        """
+        menge = bein.filled_size or Decimal(0)
+        if menge <= 0:
+            return None
+
+        gegenseite = Side.SHORT if Side(bein.side) is Side.LONG else Side.LONG
+        ergebnis, fehler = await self._send(
+            pair_id, bein.venue, symbol, gegenseite, menge, zweck="close", reduce_only=True
+        )
+        if fehler is not None:
+            return fehler
+        if ergebnis is None or ergebnis.filled_size < menge:
+            gefuellt = ergebnis.filled_size if ergebnis else Decimal(0)
+            return f"{bein.venue}: nur {gefuellt} von {menge} glattgestellt"
+        return None
+
+    def _finalise(self, pair_id: int) -> None:
+        """Ordnet Funding zu und haelt das Endergebnis fest (Auftrag 6.5)."""
+        paar = self._store.get_pair(pair_id)
+        if paar is None:  # pragma: no cover
+            return
+
+        self._store.attribute_funding(pair_id)
+        zahlungen = [z.amount for z in self._store.funding_for(pair_id)]
+
+        ergebnis = compute_pair_result(
+            ResultInput(
+                symbol=paar.symbol,
+                long_venue=paar.long_venue,
+                short_venue=paar.short_venue,
+                opened_at=als_utc(paar.opened_at),
+                closed_at=als_utc(paar.closed_at),
+                fills=self._store.fills_for(pair_id),
+                funding_payments=zahlungen,
+                notional_usd=paar.notional_usd or Decimal(0),
+            )
+        )
+        self._store.save_result(pair_id, ergebnis)
+        LOG.info(
+            "paar_ergebnis",
+            pair_id=pair_id,
+            symbol=paar.symbol,
+            netto=str(ergebnis.net_result),
+            funding=str(ergebnis.funding_received),
+            gebuehren=str(ergebnis.fees_paid),
+        )
 
     async def close_pair(self, pair_id: int) -> ExecutionOutcome:
         """Schliesst beide Beine, mit derselben Absicherungslogik wie beim Oeffnen."""
@@ -342,11 +401,13 @@ class ExecutionEngine:
         self._store.set_state(pair_id, PairState.CLOSING, message="Beide Beine schliessen")
 
         fehler: list[str] = []
-        for venue in (paar.long_venue, paar.short_venue):
+        for bein in self._store.legs(pair_id):
             try:
-                await self._adapter(venue).close_position(paar.symbol)
+                problem = await self._close_leg(pair_id, paar.symbol, bein)
             except (AdapterError, KeyError) as exc:
-                fehler.append(f"{venue}: {exc}")
+                problem = f"{bein.venue}: {exc}"
+            if problem:
+                fehler.append(problem)
 
         if fehler:
             # Ein halb geschlossenes Paar ist genauso ungesichert wie ein halb
@@ -357,6 +418,7 @@ class ExecutionEngine:
             return ExecutionOutcome(pair_id, PairState.UNHEDGED, "; ".join(fehler), {})
 
         self._store.set_state(pair_id, PairState.CLOSED, message="Paar geschlossen")
+        self._finalise(pair_id)
         return ExecutionOutcome(pair_id, PairState.CLOSED, "beide Beine geschlossen", {})
 
     # --- Wiederanlauf -----------------------------------------------------
