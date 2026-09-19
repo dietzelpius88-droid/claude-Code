@@ -11,6 +11,8 @@ dependencies = [
     "pydantic-settings>=2.6",
     "structlog>=24.4",
     "websockets>=13.0",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
