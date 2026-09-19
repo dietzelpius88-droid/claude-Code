@@ -20,10 +20,20 @@ from typing import Any, Optional, Sequence
 import structlog
 
 from app.adapters._parse import dec, dec_or_none, pick, req, ts_from_seconds
-from app.adapters.base import FatalError, HttpAdapter
+from app.adapters.base import FatalError, HttpAdapter, TradingNotSupported
 from app.core import symbols as sym
 from app.core.funding import RateConvention, to_apr, to_hourly_fraction
-from app.models.domain import FundingInfo, Market, OrderBook, OrderBookLevel, SymbolRules
+from app.models.domain import (
+    Balance,
+    FundingInfo,
+    FundingPayment,
+    Market,
+    OrderBook,
+    OrderBookLevel,
+    Position,
+    Side,
+    SymbolRules,
+)
 
 LOG = structlog.get_logger(__name__)
 
@@ -53,9 +63,25 @@ class LighterAdapter(HttpAdapter):
     # abgebrochen - nie stillschweigend der erste Treffer genommen.
     exchange_tag_candidates = ("lighter", "zklighter", "lit")
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(self, *, account_index: Optional[int] = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._market_ids: dict[str, int] = {}  # natives Symbol -> market_id
+        # Lighters Account-Endpunkte sind oeffentlich lesbar: /api/v1/account
+        # verlangt nur by=index&value=<account_index>, keine Signatur
+        # (openapi.json). Fuer Phase 2 genuegt damit der Account-Index.
+        self._account_index = account_index
+
+    @property
+    def has_account_access(self) -> bool:
+        return self._account_index is not None
+
+    def _require_account(self, was: str) -> int:
+        if self._account_index is None:
+            raise TradingNotSupported(
+                f"{self.name}: {was} braucht LIGHTER_ACCOUNT_INDEX in der .env.",
+                venue=self.name,
+            )
+        return self._account_index
 
     def _unwrap(self, antwort: Any, schluessel: str, *, kontext: str) -> Any:
         if not isinstance(antwort, dict):
@@ -251,3 +277,129 @@ class LighterAdapter(HttpAdapter):
         return [
             ts_from_seconds(req(e, "timestamp", kontext=kontext), kontext=kontext) for e in daten
         ]
+
+    # --- Account (Phase 2, nur lesend) -----------------------------------
+
+    async def _account_raw(self) -> dict:
+        index = self._require_account("Kontodaten")
+        kontext = f"{self.name} /api/v1/account"
+        antwort = await self._get("/api/v1/account", by="index", value=index)
+        if not isinstance(antwort, dict):
+            raise FatalError(f"{kontext}: unerwartetes Antwortformat.")
+        code = antwort.get("code")
+        if code is not None and int(code) != 200:
+            raise FatalError(f"{kontext}: code={code}, message={antwort.get('message')}.")
+        return antwort
+
+    async def get_balance(self) -> Balance:
+        """Kontostand aus /api/v1/account (Schema DetailedAccount)."""
+        d = await self._account_raw()
+        kontext = f"{self.name} /api/v1/account"
+
+        # total_asset_value ist das Eigenkapital inklusive offener Positionen;
+        # collateral waere nur die Sicherheit ohne deren Bewertung.
+        eigenkapital = dec_or_none(d.get("total_asset_value"), kontext=kontext)
+        if eigenkapital is None:
+            eigenkapital = dec(req(d, "collateral", kontext=kontext), kontext=kontext)
+
+        return Balance(
+            venue=self.name,
+            collateral="USDC",
+            equity=eigenkapital,
+            available=dec(req(d, "available_balance", kontext=kontext), kontext=kontext),
+            initial_margin=dec_or_none(d.get("cross_initial_margin_requirement"), kontext=kontext)
+            or Decimal(0),
+            maintenance_margin=dec_or_none(
+                d.get("cross_maintenance_margin_requirement"), kontext=kontext
+            ),
+            as_of=datetime.now(timezone.utc),
+        )
+
+    async def get_positions(self) -> list[Position]:
+        """Positionen aus /api/v1/account (Schema AccountPosition)."""
+        d = await self._account_raw()
+        kontext = f"{self.name} AccountPosition"
+
+        positionen: list[Position] = []
+        for p in d.get("positions") or []:
+            native = p.get("symbol")
+            kanonisch = sym.to_canonical(self.name, native) if native else None
+            if kanonisch is None:
+                continue
+            groesse = abs(dec(req(p, "position", kontext=kontext), kontext=kontext))
+            if groesse == 0:
+                continue
+            # sign: 1 = long, -1 = short
+            vorzeichen = int(dec(req(p, "sign", kontext=kontext), kontext=kontext))
+            seite = Side.LONG if vorzeichen >= 0 else Side.SHORT
+            mark = dec_or_none(p.get("mark_price"), kontext=kontext)
+            wert = abs(dec(req(p, "position_value", kontext=kontext), kontext=kontext))
+            if mark is None:
+                # Aus Wert und Groesse ableiten statt einen Preis zu erfinden.
+                mark = (wert / groesse) if groesse > 0 else Decimal(0)
+
+            positionen.append(
+                Position(
+                    venue=self.name,
+                    symbol=kanonisch,
+                    side=seite,
+                    size=groesse,
+                    entry_price=dec(req(p, "avg_entry_price", kontext=kontext), kontext=kontext),
+                    mark_price=mark,
+                    notional=wert,
+                    unrealised_pnl=dec_or_none(p.get("unrealized_pnl"), kontext=kontext) or Decimal(0),
+                    realised_pnl=dec_or_none(p.get("realized_pnl"), kontext=kontext) or Decimal(0),
+                    liquidation_price=dec_or_none(p.get("liquidation_price"), kontext=kontext),
+                    # Lighter nennt die Funding-Summe je Position mit.
+                    funding_paid=dec_or_none(p.get("total_funding_paid_out"), kontext=kontext),
+                    as_of=datetime.now(timezone.utc),
+                )
+            )
+        return positionen
+
+    async def get_funding_payments(self, since: datetime, *, limit: int = 100) -> list[FundingPayment]:
+        """Echte Einzelzahlungen aus /api/v1/positionFunding.
+
+        Der Endpunkt liefert je Zahlung Zeitstempel, Markt, Betrag, Rate und
+        Positionsgroesse - damit ist Anforderung 6.4 bei Lighter erfuellt.
+        """
+        index = self._require_account("Funding-Zahlungen")
+        kontext = f"{self.name} /api/v1/positionFunding"
+        daten = self._unwrap(
+            await self._get(
+                "/api/v1/positionFunding",
+                account_index=index,
+                limit=limit,
+                start_timestamp=int(since.timestamp()),
+            ),
+            "position_fundings",
+            kontext=kontext,
+        )
+        if not isinstance(daten, list):
+            raise FatalError(f"{kontext}: 'position_fundings' ist keine Liste.")
+
+        # market_id -> Symbol, damit die Zahlungen zuordenbar sind.
+        if not self._market_ids:
+            await self._details_raw()
+        nach_id = {mid: nativ for nativ, mid in self._market_ids.items()}
+
+        zahlungen: list[FundingPayment] = []
+        for e in daten:
+            mid = e.get("market_id")
+            nativ = nach_id.get(int(mid)) if mid is not None else None
+            kanonisch = sym.to_canonical(self.name, nativ) if nativ else None
+            if kanonisch is None:
+                continue
+            zahlungen.append(
+                FundingPayment(
+                    venue=self.name,
+                    symbol=kanonisch,
+                    amount=dec(req(e, "change", kontext=kontext), kontext=kontext),
+                    rate=dec_or_none(e.get("rate"), kontext=kontext),
+                    position_size=dec_or_none(e.get("position_size"), kontext=kontext),
+                    timestamp=ts_from_seconds(req(e, "timestamp", kontext=kontext), kontext=kontext),
+                    confirmed=True,
+                    external_id=str(e.get("funding_id")) if e.get("funding_id") is not None else None,
+                )
+            )
+        return zahlungen

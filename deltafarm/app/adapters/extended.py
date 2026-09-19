@@ -18,10 +18,20 @@ from typing import Any, Optional, Sequence
 import structlog
 
 from app.adapters._parse import dec, dec_or_none, pick, req, ts_from_millis
-from app.adapters.base import FatalError, HttpAdapter
+from app.adapters.base import FatalError, HttpAdapter, TradingNotSupported
 from app.core import symbols as sym
 from app.core.funding import RateConvention, to_apr, to_hourly_fraction
-from app.models.domain import FundingInfo, Market, OrderBook, OrderBookLevel, SymbolRules
+from app.models.domain import (
+    Balance,
+    FundingInfo,
+    FundingPayment,
+    Market,
+    OrderBook,
+    OrderBookLevel,
+    Position,
+    Side,
+    SymbolRules,
+)
 
 LOG = structlog.get_logger(__name__)
 
@@ -37,6 +47,28 @@ class ExtendedAdapter(HttpAdapter):
     declared_interval_hours = Decimal(1)
     # Extended liefert einen Bruch je Zahlungsintervall.
     rate_convention = RateConvention.INTERVAL_FRACTION
+
+    def __init__(self, *, api_key: Optional[str] = None, **kwargs: Any) -> None:
+        # Der Schluessel geht ausschliesslich in den Header, nie in eine URL
+        # oder eine Logzeile. HttpAdapter maskiert ihn beim Loggen nicht, weil
+        # er dort gar nicht erst auftaucht.
+        kopfzeilen = dict(kwargs.pop("headers", None) or {})
+        if api_key:
+            kopfzeilen["X-Api-Key"] = api_key
+        super().__init__(headers=kopfzeilen, **kwargs)
+        self._has_api_key = bool(api_key)
+        self._fee_cache: dict[str, tuple[Decimal, Decimal]] = {}
+
+    @property
+    def has_account_access(self) -> bool:
+        return self._has_api_key
+
+    def _require_key(self, was: str) -> None:
+        if not self._has_api_key:
+            raise TradingNotSupported(
+                f"{self.name}: {was} braucht EXTENDED_API_KEY in der .env.",
+                venue=self.name,
+            )
 
     def _unwrap(self, antwort: Any, *, kontext: str) -> Any:
         """Schaelt {"status": "OK", "data": ...} aus."""
@@ -221,3 +253,144 @@ class ExtendedAdapter(HttpAdapter):
             ts_from_millis(req(e, "timestamp", "T", kontext=kontext), kontext=kontext)
             for e in daten
         ]
+
+    # --- Account (Phase 2, nur lesend) -----------------------------------
+
+    async def get_balance(self) -> Balance:
+        """GET /user/balance - belegt aus x10/models/balance.py."""
+        self._require_key("Kontostand")
+        kontext = f"{self.name} /user/balance"
+        d = self._unwrap(await self._get("/user/balance"), kontext=kontext)
+
+        return Balance(
+            venue=self.name,
+            collateral=str(pick(d, "collateralName", "collateral_name") or "USD"),
+            equity=dec(req(d, "equity", kontext=kontext), kontext=kontext),
+            available=dec(
+                req(d, "availableForTrade", "available_for_trade", kontext=kontext), kontext=kontext
+            ),
+            unrealised_pnl=dec_or_none(pick(d, "unrealisedPnl", "unrealised_pnl"), kontext=kontext)
+            or Decimal(0),
+            initial_margin=dec_or_none(pick(d, "initialMargin", "initial_margin"), kontext=kontext)
+            or Decimal(0),
+            as_of=datetime.now(timezone.utc),
+        )
+
+    async def get_positions(self) -> list[Position]:
+        """GET /user/positions - belegt aus x10/models/position.py."""
+        self._require_key("Positionen")
+        kontext = f"{self.name} /user/positions"
+        daten = self._unwrap(await self._get("/user/positions"), kontext=kontext)
+        if not isinstance(daten, list):
+            raise FatalError(f"{kontext}: 'data' ist keine Liste.")
+
+        positionen: list[Position] = []
+        for p in daten:
+            native = p.get("market")
+            kanonisch = sym.to_canonical(self.name, native) if native else None
+            if kanonisch is None:
+                continue  # Markt, den wir nicht fuehren
+            groesse = abs(dec(req(p, "size", kontext=kontext), kontext=kontext))
+            if groesse == 0:
+                continue
+            seite = Side.LONG if str(p.get("side", "LONG")).upper() == "LONG" else Side.SHORT
+
+            positionen.append(
+                Position(
+                    venue=self.name,
+                    symbol=kanonisch,
+                    side=seite,
+                    size=groesse,
+                    entry_price=dec(req(p, "openPrice", "open_price", kontext=kontext), kontext=kontext),
+                    mark_price=dec(req(p, "markPrice", "mark_price", kontext=kontext), kontext=kontext),
+                    notional=abs(dec(req(p, "value", kontext=kontext), kontext=kontext)),
+                    unrealised_pnl=dec_or_none(pick(p, "unrealisedPnl", "unrealised_pnl"), kontext=kontext)
+                    or Decimal(0),
+                    realised_pnl=dec_or_none(pick(p, "realisedPnl", "realised_pnl"), kontext=kontext)
+                    or Decimal(0),
+                    liquidation_price=dec_or_none(
+                        pick(p, "liquidationPrice", "liquidation_price"), kontext=kontext
+                    ),
+                    leverage=dec_or_none(p.get("leverage"), kontext=kontext),
+                    # Extended nennt fuer offene Positionen keine Funding-Summe.
+                    funding_paid=None,
+                    opened_at=(
+                        ts_from_millis(p["createdAt"], kontext=kontext)
+                        if p.get("createdAt") is not None
+                        else None
+                    ),
+                    as_of=datetime.now(timezone.utc),
+                )
+            )
+        return positionen
+
+    async def get_fees(self, symbol: str) -> tuple[Decimal, Decimal]:
+        """GET /user/fees - (maker, taker). Bei Extended accountabhaengig (ADR-005)."""
+        self._require_key("Gebuehren")
+        if symbol in self._fee_cache:
+            return self._fee_cache[symbol]
+
+        native = sym.to_native(self.name, symbol)
+        kontext = f"{self.name} /user/fees"
+        daten = self._unwrap(await self._get("/user/fees", market=native), kontext=kontext)
+        if not isinstance(daten, list) or not daten:
+            raise FatalError(f"{kontext}: keine Gebuehren fuer {native}.", venue=self.name)
+
+        eintrag = next((e for e in daten if e.get("market") == native), daten[0])
+        maker = dec(req(eintrag, "makerFeeRate", "maker_fee_rate", kontext=kontext), kontext=kontext)
+        taker = dec(req(eintrag, "takerFeeRate", "taker_fee_rate", kontext=kontext), kontext=kontext)
+        self._fee_cache[symbol] = (maker, taker)
+        return maker, taker
+
+    async def get_funding_payments(self, since: datetime) -> list[FundingPayment]:
+        """Funding-Zahlungen geschlossener Positionen.
+
+        Extended bietet keinen Endpunkt fuer einzelne Funding-Zahlungen
+        (RESEARCH.md, OFFEN-6). Was es gibt, ist die Summe je geschlossener
+        Position in `realisedPnlBreakdown.fundingFees` aus
+        GET /user/positions/history. Die wird hier als **eine** Zahlung je
+        Position gemeldet und ist `confirmed=True`, weil sie von der Boerse
+        stammt - sie ist nur nicht nach Zeitpunkten aufgeloest.
+
+        Fuer offene Positionen rechnet die Dienstschicht aus Rate und Groesse
+        hoch und kennzeichnet das Ergebnis als `confirmed=False`.
+        """
+        self._require_key("Funding-Zahlungen")
+        kontext = f"{self.name} /user/positions/history"
+        daten = self._unwrap(
+            await self._get("/user/positions/history", startTime=int(since.timestamp() * 1000)),
+            kontext=kontext,
+        )
+        if not isinstance(daten, list):
+            raise FatalError(f"{kontext}: 'data' ist keine Liste.")
+
+        zahlungen: list[FundingPayment] = []
+        for p in daten:
+            native = p.get("market")
+            kanonisch = sym.to_canonical(self.name, native) if native else None
+            if kanonisch is None:
+                continue
+            aufschluesselung = (
+                p.get("realisedPnlBreakdown") or p.get("realised_pnl_breakdown") or {}
+            )
+            betrag = dec_or_none(
+                pick(aufschluesselung, "fundingFees", "funding_fees"), kontext=kontext
+            )
+            if betrag is None:
+                continue
+            geschlossen = pick(p, "closedTime", "closed_time") or pick(p, "createdTime", "created_time")
+            zahlungen.append(
+                FundingPayment(
+                    venue=self.name,
+                    symbol=kanonisch,
+                    amount=betrag,
+                    timestamp=(
+                        ts_from_millis(geschlossen, kontext=kontext)
+                        if geschlossen is not None
+                        else datetime.now(timezone.utc)
+                    ),
+                    confirmed=True,
+                    external_id=str(p.get("id")) if p.get("id") is not None else None,
+                )
+            )
+        return zahlungen

@@ -163,3 +163,180 @@ def lighter_fundings(stamps_s: list[int]) -> dict:
             for t in stamps_s
         ],
     }
+
+
+# --- Account (Phase 2) ----------------------------------------------------
+# Extended: Felder aus x10/models/balance.py und x10/models/position.py,
+# camelCase auf der Leitung. Lighter: Schemata DetailedAccount,
+# AccountPosition und PositionFunding aus der openapi.json.
+
+
+def extended_balance() -> dict:
+    return {
+        "status": "OK",
+        "data": {
+            "collateralName": "USD",
+            "balance": "10000",
+            "equity": "10250.5",
+            "availableForTrade": "8000",
+            "availableForWithdrawal": "7500",
+            "unrealisedPnl": "250.5",
+            "initialMargin": "2050.1",
+            "marginRatio": "0.2",
+            "updatedTime": 1789000000000,
+        },
+    }
+
+
+def extended_positions() -> dict:
+    return {
+        "status": "OK",
+        "data": [
+            {
+                "id": 1,
+                "accountId": 42,
+                "market": "BTC-USD",
+                "status": "OPENED",
+                "side": "LONG",
+                "leverage": "10",
+                "size": "0.5",
+                "value": "32000",
+                "openPrice": "63500",
+                "markPrice": "64000",
+                "liquidationPrice": "58000",
+                "unrealisedPnl": "250",
+                "realisedPnl": "0",
+                "createdAt": 1789000000000,
+                "updatedAt": 1789000000000,
+            },
+            {
+                # Markt, den wir nicht fuehren - muss uebersprungen werden.
+                "id": 2,
+                "market": "PEPE-USD",
+                "status": "OPENED",
+                "side": "SHORT",
+                "size": "1000",
+                "value": "10",
+                "openPrice": "0.00001",
+                "markPrice": "0.00001",
+                "unrealisedPnl": "0",
+                "realisedPnl": "0",
+            },
+            {
+                # Groesse null - keine echte Position.
+                "id": 3,
+                "market": "ETH-USD",
+                "status": "CLOSED",
+                "side": "LONG",
+                "size": "0",
+                "value": "0",
+                "openPrice": "3100",
+                "markPrice": "3100",
+                "unrealisedPnl": "0",
+                "realisedPnl": "0",
+            },
+        ],
+    }
+
+
+def extended_fees() -> dict:
+    return {
+        "status": "OK",
+        "data": [
+            {
+                "market": "BTC-USD",
+                "makerFeeRate": "0.0002",
+                "takerFeeRate": "0.0005",
+                "builderFeeRate": "0",
+            }
+        ],
+    }
+
+
+def extended_positions_history() -> dict:
+    return {
+        "status": "OK",
+        "data": [
+            {
+                "id": 7,
+                "market": "BTC-USD",
+                "side": "LONG",
+                "size": "0.5",
+                "realisedPnl": "120",
+                "realisedPnlBreakdown": {
+                    "tradePnl": "100",
+                    "fundingFees": "35.25",
+                    "openFees": "-8",
+                    "closeFees": "-7",
+                },
+                "createdTime": 1788900000000,
+                "closedTime": 1789000000000,
+            }
+        ],
+    }
+
+
+def lighter_account() -> dict:
+    return {
+        "code": 200,
+        "account_index": 5,
+        "l1_address": "0xabc",
+        "collateral": "10000",
+        "available_balance": "8000",
+        "total_asset_value": "10250.5",
+        "cross_initial_margin_requirement": "2050.1",
+        "cross_maintenance_margin_requirement": "1025",
+        "positions": [
+            {
+                "market_id": 1,
+                "symbol": "BTC",
+                "sign": -1,
+                "position": "0.5",
+                "avg_entry_price": "63800",
+                "position_value": "32000",
+                "unrealized_pnl": "-100",
+                "realized_pnl": "0",
+                "liquidation_price": "70000",
+                "total_funding_paid_out": "12.5",
+                "initial_margin_fraction": "0.02",
+            },
+            {
+                "market_id": 42,
+                "symbol": "PEPE",
+                "sign": 1,
+                "position": "1000",
+                "avg_entry_price": "0.00001",
+                "position_value": "10",
+                "unrealized_pnl": "0",
+                "realized_pnl": "0",
+            },
+        ],
+    }
+
+
+def lighter_position_funding() -> dict:
+    return {
+        "code": 200,
+        "position_fundings": [
+            {
+                "timestamp": 1789000000,
+                "market_id": 1,
+                "funding_id": 99,
+                "change": "1.25",
+                "discount": "0",
+                "rate": "10.95",
+                "position_size": "0.5",
+                "position_side": "short",
+            },
+            {
+                "timestamp": 1789003600,
+                "market_id": 1,
+                "funding_id": 100,
+                "change": "-0.75",
+                "discount": "0",
+                "rate": "-6.57",
+                "position_size": "0.5",
+                "position_side": "short",
+            },
+        ],
+    }
