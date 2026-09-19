@@ -6,6 +6,8 @@ __pycache__/
 node_modules/
 dist/
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 
 web/dist/
