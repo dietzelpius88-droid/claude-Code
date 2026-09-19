@@ -145,5 +145,92 @@ class Opportunity(_Model):
     # Kosten, mit denen der Break-even gerechnet wurde - damit in der UI
     # sichtbar ist, ob mit echten Accountgebuehren oder mit Annahmen gerechnet wurde.
     cost_basis_known: bool = False
+    # Relative Abweichung der Mark-Preise beider Boersen. None = nicht pruefbar.
+    price_deviation: Optional[Decimal] = None
+    # True = Preise bestaetigen dasselbe Asset, False = widerlegen es,
+    # None = keine Aussage moeglich. Ein gleicher Ticker allein genuegt nicht.
+    asset_match: Optional[bool] = None
     min_depth_usd: Optional[Decimal] = None
     as_of: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class Balance(_Model):
+    """Kontostand einer Boerse, auf die Sicherheitswaehrung bezogen."""
+
+    venue: str
+    collateral: str
+    equity: Decimal
+    available: Decimal
+    unrealised_pnl: Decimal = Decimal(0)
+    initial_margin: Decimal = Decimal(0)
+    maintenance_margin: Optional[Decimal] = None
+    as_of: datetime
+
+    @property
+    def margin_usage(self) -> Optional[Decimal]:
+        """Anteil des Eigenkapitals, der als Initial Margin gebunden ist."""
+        if self.equity <= 0:
+            return None
+        return self.initial_margin / self.equity
+
+
+class Position(_Model):
+    """Eine offene Position auf einer Boerse."""
+
+    venue: str
+    symbol: str
+    side: Side
+    size: Decimal  # immer positiv; die Richtung steht in side
+    entry_price: Decimal
+    mark_price: Decimal
+    notional: Decimal
+    unrealised_pnl: Decimal = Decimal(0)
+    realised_pnl: Decimal = Decimal(0)
+    liquidation_price: Optional[Decimal] = None
+    leverage: Optional[Decimal] = None
+    funding_paid: Optional[Decimal] = None  # Summe, sofern die Boerse sie nennt
+    opened_at: Optional[datetime] = None  # nur, wenn die Boerse es nennt
+    as_of: datetime
+
+    @property
+    def signed_size(self) -> Decimal:
+        return self.size if self.side is Side.LONG else -self.size
+
+    @property
+    def signed_notional(self) -> Decimal:
+        return self.notional if self.side is Side.LONG else -self.notional
+
+
+class FundingPayment(_Model):
+    """Eine einzelne Funding-Zahlung.
+
+    `confirmed` unterscheidet, ob die Boerse die Zahlung gemeldet hat oder ob
+    wir sie aus Rate und Groesse gerechnet haben. Eine gerechnete Zahlung darf
+    im Journal nie wie eine bestaetigte aussehen.
+    """
+
+    venue: str
+    symbol: str
+    amount: Decimal  # positiv = erhalten, negativ = gezahlt
+    rate: Optional[Decimal] = None
+    position_size: Optional[Decimal] = None
+    timestamp: datetime
+    confirmed: bool = True
+    external_id: Optional[str] = None
+
+
+class HealthLevel(StrEnum):
+    GREEN = "GREEN"
+    YELLOW = "YELLOW"
+    RED = "RED"
+
+
+class PositionHealth(_Model):
+    """Abstand zur Liquidation und Margin-Auslastung, als Ampel."""
+
+    venue: str
+    symbol: str
+    liquidation_distance: Optional[Decimal] = None  # Anteil der Preisbewegung
+    margin_usage: Optional[Decimal] = None
+    level: HealthLevel = HealthLevel.GREEN
+    detail: Optional[str] = None
