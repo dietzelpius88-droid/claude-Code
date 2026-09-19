@@ -13,7 +13,7 @@ import structlog
 from app.adapters.base import AdapterError
 from app.core.funding import infer_interval_hours, interval_matches
 from app.core.opportunities import build_opportunities
-from app.models.domain import FundingInfo, Opportunity, VenueStatus
+from app.models.domain import FundingInfo, Market, Opportunity, VenueStatus
 
 LOG = structlog.get_logger(__name__)
 
@@ -160,6 +160,41 @@ class MarketDataService:
         ergebnisse = await asyncio.gather(*aufgaben)
         return [e for e in ergebnisse if e is not None]
 
+    async def _markets_for(self, adapter) -> list[Market]:
+        try:
+            return await adapter.list_markets()
+        except AdapterError as exc:
+            LOG.warning("maerkte_nicht_abrufbar", venue=adapter.name, fehler=str(exc))
+            return []
+
+    async def collect_mark_prices(self) -> dict[tuple[str, str], Decimal]:
+        """Mark-Preise je Boerse und Symbol.
+
+        Grundlage der Asset-Pruefung: ein gleicher Ticker allein belegt nicht,
+        dass zwei Listings dasselbe Asset meinen.
+        """
+        listen = await asyncio.gather(*(self._markets_for(a) for a in self._adapters))
+        preise: dict[tuple[str, str], Decimal] = {}
+        for liste in listen:
+            for m in liste:
+                if m.mark_price is not None:
+                    preise[(m.venue, m.symbol)] = m.mark_price
+        return preise
+
+    @staticmethod
+    def asset_warnings(opportunities: Sequence[Opportunity]) -> list[str]:
+        """Warnt, wenn zwei Listings mit gleichem Ticker nicht zusammenpassen."""
+        warnungen: list[str] = []
+        for o in opportunities:
+            if o.asset_match is False:
+                warnungen.append(
+                    f"{o.symbol}: Die Mark-Preise von {o.long_venue} und {o.short_venue} "
+                    f"weichen um {o.price_deviation:.0%} voneinander ab. Der gleiche Ticker "
+                    f"steht hier offenbar fuer zwei verschiedene Assets - die Funding-Raten "
+                    f"sind nicht vergleichbar und das Paar ist nicht handelbar."
+                )
+        return warnungen
+
     async def venue_status(self) -> list[VenueStatus]:
         stati: list[VenueStatus] = []
         for adapter in self._adapters:
@@ -186,9 +221,10 @@ class MarketDataService:
         taker_fees: Optional[Mapping[str, Decimal]] = None,
     ) -> Snapshot:
         """Holt Funding und Status und baut die Paarliste."""
-        funding, stati = await asyncio.gather(
+        funding, stati, mark_prices = await asyncio.gather(
             self.collect_funding(symbols),
             self.venue_status(),
+            self.collect_mark_prices(),
         )
 
         # Gebuehren: was die Boerse oeffentlich mitliefert, nutzen wir. Extended
@@ -210,13 +246,15 @@ class MarketDataService:
                         gebuehren[adapter.name] = regeln.taker_fee
                     break  # eine Abfrage je Boerse genuegt fuer die Gebuehr
 
-        chancen = build_opportunities(funding, taker_fees=gebuehren)
+        chancen = build_opportunities(
+            funding, taker_fees=gebuehren, mark_prices=mark_prices
+        )
 
         snapshot = Snapshot(
             funding=tuple(funding),
             opportunities=tuple(chancen),
             venues=tuple(stati),
-            warnings=tuple(self.unit_warnings(funding)),
+            warnings=tuple(self.unit_warnings(funding) + self.asset_warnings(chancen)),
         )
         self._snapshot = snapshot
         return snapshot
