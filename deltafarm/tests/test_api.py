@@ -10,7 +10,9 @@ from app.main import create_app
 
 
 @pytest.fixture
-def client() -> TestClient:
+def client(tmp_path) -> TestClient:
+    # Eigene Datenbankdatei je Test, damit das Projektverzeichnis sauber
+    # bleibt und Tests sich nicht gegenseitig sehen.
     adapters = [
         MockAdapter(
             "extended",
@@ -23,7 +25,7 @@ def client() -> TestClient:
             taker_fee=Decimal("0.0002"),
         ),
     ]
-    app = create_app(adapters=adapters, start_background=False)
+    app = create_app(adapters=adapters, start_background=False, db_path=str(tmp_path / "test.db"))
     with TestClient(app) as c:
         yield c
 
@@ -90,12 +92,14 @@ def test_symbol_kann_gefiltert_werden(client: TestClient):
     assert [z["symbol"] for z in daten["rows"]] == ["BTC-PERP"]
 
 
-def test_ausgefallene_boerse_laesst_die_api_stehen():
+def test_ausgefallene_boerse_laesst_die_api_stehen(tmp_path):
     adapters = [
         MockAdapter("extended", rates={"BTC-PERP": Decimal("0.00002")}),
         failing_adapter("lighter"),
     ]
-    with TestClient(create_app(adapters=adapters, start_background=False)) as c:
+    with TestClient(
+        create_app(adapters=adapters, start_background=False, db_path=str(tmp_path / "t.db"))
+    ) as c:
         venues = c.get("/api/venues").json()
         assert {v["name"]: v["reachable"] for v in venues} == {
             "extended": True,
@@ -125,7 +129,7 @@ def test_venues_bleiben_bei_gefilterter_abfrage_vollstaendig(client: TestClient)
     assert daten["venues"] == ["extended", "lighter"]
 
 
-def test_ohne_daten_werden_die_boersen_trotzdem_aufgefuehrt():
+def test_ohne_daten_werden_die_boersen_trotzdem_aufgefuehrt(tmp_path):
     """Die Warnung verweist auf die Kopfzeile - also muss dort etwas stehen.
 
     Antwortet beim Erstabruf keine Boerse rechtzeitig, zeigt die Oberflaeche
@@ -149,7 +153,9 @@ def test_ohne_daten_werden_die_boersen_trotzdem_aufgefuehrt():
             a.list_markets = nie_fertig  # type: ignore[method-assign]
             a.get_funding = nie_fertig  # type: ignore[method-assign]
 
-        with TestClient(create_app(adapters=langsam, start_background=False)) as c:
+        with TestClient(
+            create_app(adapters=langsam, start_background=False, db_path=str(tmp_path / "l.db"))
+        ) as c:
             daten = c.get("/api/funding").json()
             assert daten["rows"] == []
             assert "Kopfzeile" in daten["warnings"][0]

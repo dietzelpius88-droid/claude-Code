@@ -13,8 +13,11 @@ from decimal import Decimal
 
 import uvicorn
 
+from datetime import datetime, timedelta, timezone
+
 from app.adapters.mock import MockAdapter
 from app.core.funding import RateConvention
+from app.models.domain import Balance, FundingPayment, Position, Side
 from app.config import get_settings
 from app.main import create_app
 
@@ -54,9 +57,72 @@ MARKEN = {
 }
 
 
+class DemoKonto(MockAdapter):
+    """MockAdapter mit Kontodaten, damit Bereich C etwas zeigt.
+
+    Die Positionen bilden ein von Hand eroeffnetes Paar nach: long auf
+    Extended, short auf Lighter, mit einem kleinen Rest-Delta.
+    """
+
+    has_account_access = True
+
+    def __init__(self, name: str, *, position: Position | None = None, **kwargs):
+        super().__init__(name, **kwargs)
+        self._position = position
+
+    async def get_balance(self) -> Balance:
+        return Balance(
+            venue=self.name,
+            collateral="USD",
+            equity=Decimal("12500.00"),
+            available=Decimal("8200.00"),
+            unrealised_pnl=Decimal("42.50"),
+            initial_margin=Decimal("4300.00"),
+            as_of=datetime.now(timezone.utc),
+        )
+
+    async def get_positions(self) -> list[Position]:
+        return [self._position] if self._position else []
+
+    async def get_funding_payments(self, since):
+        start = datetime.now(timezone.utc) - timedelta(hours=6)
+        return [
+            FundingPayment(
+                venue=self.name,
+                symbol="SOL-PERP",
+                amount=Decimal("0.42") if self.name == "lighter" else Decimal("-0.18"),
+                rate=Decimal("15.77") if self.name == "lighter" else Decimal("0.0000031"),
+                position_size=Decimal("28"),
+                timestamp=start + timedelta(hours=i),
+                confirmed=True,
+                external_id=f"{self.name}-demo-{i}",
+            )
+            for i in range(6)
+        ]
+
+
+def _demo_position(venue: str, side: Side, notional: str, liq: str) -> Position:
+    preis = MARKEN["SOL-PERP"]
+    groesse = Decimal(notional) / preis
+    return Position(
+        venue=venue,
+        symbol="SOL-PERP",
+        side=side,
+        size=groesse,
+        entry_price=preis - Decimal("1.20") if side is Side.LONG else preis + Decimal("0.90"),
+        mark_price=preis,
+        notional=Decimal(notional),
+        unrealised_pnl=Decimal("33.60") if side is Side.LONG else Decimal("-25.20"),
+        liquidation_price=Decimal(liq),
+        funding_paid=Decimal("2.52") if venue == "lighter" else None,
+        opened_at=datetime.now(timezone.utc) - timedelta(hours=19, minutes=30),
+        as_of=datetime.now(timezone.utc),
+    )
+
+
 def build_demo_app():
     adapters = [
-        MockAdapter(
+        DemoKonto(
             "extended",
             rates=EXTENDED_RATEN,
             mark_prices=MARKEN,
@@ -64,14 +130,16 @@ def build_demo_app():
             # der Demomodus bildet das nach.
             taker_fee=None,
             maker_fee=None,
+            position=_demo_position("extended", Side.LONG, "4180", "104.50"),
         ),
-        MockAdapter(
+        DemoKonto(
             "lighter",
             rates=LIGHTER_RATEN,
             mark_prices=MARKEN,
             convention=RateConvention.ANNUALIZED_PERCENT,
             taker_fee=Decimal("0.0001"),
             maker_fee=Decimal("0"),
+            position=_demo_position("lighter", Side.SHORT, "4100", "201.30"),
         ),
     ]
     return create_app(adapters=adapters, start_background=True)

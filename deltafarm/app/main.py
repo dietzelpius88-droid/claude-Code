@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional, Sequence
 
 import structlog
@@ -15,22 +16,33 @@ from app.adapters.lighter import LighterAdapter
 from app.api.routes import router
 from app.config import Settings, get_settings
 from app.core import symbols as sym
+from app.core.account import AccountService
 from app.core.service import MarketDataService
+from app.storage.db import create_all, make_engine, make_session_factory
+from app.storage.journal import Journal
 
 LOG = structlog.get_logger(__name__)
 
 
 def build_adapters(settings: Settings) -> list:
+    # Die Schluessel werden hier aus den Einstellungen geholt und wandern
+    # direkt in den Adapter. Sie erscheinen in keiner Logzeile und in keiner
+    # API-Antwort.
+    api_key = (
+        settings.extended_api_key.get_secret_value() if settings.extended_api_key else None
+    )
     return [
         ExtendedAdapter(
             base_url=settings.extended_rest_url,
             rate_per_second=settings.extended_rate_per_second,
             burst=settings.extended_burst,
+            api_key=api_key,
         ),
         LighterAdapter(
             base_url=settings.lighter_rest_url,
             rate_per_second=settings.lighter_rate_per_second,
             burst=settings.lighter_burst,
+            account_index=settings.lighter_account_index,
         ),
     ]
 
@@ -74,6 +86,8 @@ async def background_worker(app: FastAPI, interval_seconds: int) -> None:
     dienst: MarketDataService = app.state.service
     symbole = list(sym.canonical_symbols())
 
+    konto: Optional[AccountService] = getattr(app.state, "account", None)
+
     try:
         await run_startup_checks(dienst)
     except asyncio.CancelledError:
@@ -86,6 +100,13 @@ async def background_worker(app: FastAPI, interval_seconds: int) -> None:
             snapshot = await dienst.refresh(symbole)
             for warnung in snapshot.warnings:
                 LOG.warning("plausibilitaet", meldung=warnung)
+
+            # Funding-Zahlungen und Kontostaende ins Journal nachziehen.
+            # Ohne Zugangsdaten passiert hier nichts - das ist kein Fehler.
+            if konto is not None and konto.has_any_account_access:
+                ergebnis = await konto.sync()
+                if ergebnis["funding_neu"]:
+                    LOG.info("funding_nachgeladen", **ergebnis)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # der Hintergrundlauf darf nie sterben
@@ -98,14 +119,27 @@ def create_app(
     settings: Optional[Settings] = None,
     adapters: Optional[Sequence] = None,
     start_background: bool = True,
+    db_path: Optional[str] = None,
 ) -> FastAPI:
     s = settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.service = MarketDataService(
-            adapters if adapters is not None else build_adapters(s),
-            environment=s.environment.value,
+        verwendete = list(adapters) if adapters is not None else build_adapters(s)
+
+        # Datenbank und Journal. Eine Datei, kein Server.
+        engine = make_engine(Path(db_path) if db_path else None)
+        create_all(engine)
+        app.state.journal = Journal(make_session_factory(engine))
+
+        app.state.service = MarketDataService(verwendete, environment=s.environment.value)
+        app.state.account = AccountService(verwendete, journal=app.state.journal)
+
+        app.state.journal.record_event(
+            kind="start",
+            message=f"Anwendung gestartet ({s.environment.value}, "
+            f"{'Trockenlauf' if s.dry_run else 'LIVE'})",
+            payload={"umgebung": s.environment.value, "dry_run": s.dry_run},
         )
         LOG.info(
             "start",

@@ -6,9 +6,15 @@ import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 
 from app.api.schemas import (
+    BalanceOut,
     BestPairOut,
+    DetectedPairOut,
+    HealthOutModel,
+    JournalEntryOut,
+    LegOut,
     FundingMatrixOut,
     FundingRowOut,
     HealthOut,
@@ -19,6 +25,7 @@ from app.api.schemas import (
 )
 from app.config import get_settings
 from app.core import symbols as sym
+from app.core.account import AccountService
 from app.core.service import MarketDataService, Snapshot
 from app.models.domain import VenueStatus
 
@@ -166,7 +173,11 @@ async def funding(
 
     bestes: dict[str, BestPairOut] = {}
     for op in snapshot.opportunities:
-        # opportunities sind nach Netto-APR sortiert, der erste je Symbol gewinnt
+        # Sortiert: bestaetigte Assets zuerst, der erste je Symbol gewinnt.
+        # Ein Paar, dessen Preise zwei verschiedene Assets nahelegen, wird
+        # nie als bester Vorschlag ausgewiesen.
+        if op.asset_match is False:
+            continue
         if op.symbol not in bestes:
             bestes[op.symbol] = BestPairOut(
                 long_venue=op.long_venue,
@@ -175,6 +186,8 @@ async def funding(
                 net_apr=op.net_apr,
                 breakeven_hours=op.breakeven_hours,
                 cost_basis_known=op.cost_basis_known,
+                price_deviation=op.price_deviation,
+                asset_match=op.asset_match,
             )
 
     zeilen = [
@@ -204,7 +217,134 @@ async def opportunities(request: Request) -> list[OpportunityOut]:
             net_apr=o.net_apr,
             breakeven_hours=o.breakeven_hours,
             cost_basis_known=o.cost_basis_known,
+            price_deviation=o.price_deviation,
+            asset_match=o.asset_match,
             as_of=o.as_of,
         )
         for o in snapshot.opportunities
     ]
+
+
+# --- Phase 2: Account, Positionen, Journal -------------------------------
+
+
+def _account(request: Request) -> AccountService:
+    dienst = getattr(request.app.state, "account", None)
+    if dienst is None:  # pragma: no cover - nur bei Fehlkonfiguration
+        raise HTTPException(status_code=503, detail="Account-Dienst nicht bereit.")
+    return dienst
+
+
+def _journal(request: Request):
+    tagebuch = getattr(request.app.state, "journal", None)
+    if tagebuch is None:  # pragma: no cover
+        raise HTTPException(status_code=503, detail="Journal nicht bereit.")
+    return tagebuch
+
+
+@router.get("/balances", response_model=list[BalanceOut])
+async def balances(request: Request) -> list[BalanceOut]:
+    """Kontostaende. Leer, solange keine Zugangsdaten hinterlegt sind."""
+    return [
+        BalanceOut(
+            venue=b.venue,
+            collateral=b.collateral,
+            equity=b.equity,
+            available=b.available,
+            unrealised_pnl=b.unrealised_pnl,
+            initial_margin=b.initial_margin,
+            margin_usage=b.margin_usage,
+            as_of=b.as_of,
+        )
+        for b in await _account(request).balances()
+    ]
+
+
+@router.get("/positions", response_model=list[DetectedPairOut])
+async def positions(request: Request) -> list[DetectedPairOut]:
+    """Offene Positionen, zu Paaren gruppiert.
+
+    Phase 2 zeigt damit auch Paare an, die von Hand eroeffnet wurden. Ein
+    Symbol mit nur einem Bein erscheint als nicht gehedgt.
+    """
+    dienst = _account(request)
+    positionen, kontostaende = await dienst.positions(), await dienst.balances()
+    paare = dienst.detect_pairs(positionen, kontostaende)
+
+    return [
+        DetectedPairOut(
+            symbol=p.symbol,
+            legs=[
+                LegOut(
+                    venue=a.position.venue,
+                    symbol=a.position.symbol,
+                    side=a.position.side.value,
+                    size=a.position.size,
+                    entry_price=a.position.entry_price,
+                    mark_price=a.position.mark_price,
+                    notional=a.position.notional,
+                    unrealised_pnl=a.position.unrealised_pnl,
+                    liquidation_price=a.position.liquidation_price,
+                    funding_paid=a.position.funding_paid,
+                    funding_received=a.funding_received,
+                    health=HealthOutModel(
+                        liquidation_distance=a.health.liquidation_distance,
+                        margin_usage=a.health.margin_usage,
+                        level=a.health.level.value,
+                        detail=a.health.detail,
+                    ),
+                )
+                for a in p.legs
+            ],
+            net_delta_usd=p.net_delta_usd,
+            net_delta_pct=p.net_delta_pct,
+            combined_pnl=p.combined_pnl,
+            funding_received=p.funding_received,
+            hedged=p.hedged,
+            level=p.level.value,
+            holding_hours=p.holding_hours,
+        )
+        for p in paare
+    ]
+
+
+@router.get("/journal")
+async def journal(
+    request: Request,
+    format: str = Query(default="json", pattern="^(json|csv)$"),
+    limit: int = Query(default=500, ge=1, le=10000),
+):
+    """Chronologisches Journal. Mit format=csv als Datei zum Herunterladen."""
+    tagebuch = _journal(request)
+
+    if format == "csv":
+        return PlainTextResponse(
+            tagebuch.to_csv(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="deltafarm-journal.csv"'},
+        )
+
+    eintraege: list[JournalEntryOut] = [
+        JournalEntryOut(
+            timestamp=e.timestamp,
+            kind=e.kind,
+            venue=e.venue,
+            symbol=e.symbol,
+            message=e.message,
+        )
+        for e in tagebuch.events(limit=limit)
+    ]
+    eintraege += [
+        JournalEntryOut(
+            timestamp=z.timestamp,
+            kind="funding",
+            venue=z.venue,
+            symbol=z.symbol,
+            amount=z.amount,
+            confirmed=z.confirmed,
+            message="Funding-Zahlung" if z.confirmed else "Funding-Zahlung (gerechnet)",
+        )
+        for z in tagebuch.funding_payments()
+    ]
+    eintraege.sort(key=lambda e: e.timestamp)
+    return eintraege
