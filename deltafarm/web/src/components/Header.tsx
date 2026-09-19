@@ -1,16 +1,18 @@
 import type { BalanceRow, Health, Venue } from "../api";
 import { betrag, uhrzeit } from "../format";
+import KillSwitch from "./KillSwitch";
 
 type Props = {
   health: Health | undefined;
   venues: Venue[] | undefined;
   balances: BalanceRow[] | undefined;
   stand: string | undefined;
+  onKillSwitch: () => void;
 };
 
 // Umgebung und Modus stehen dauerhaft in der Kopfzeile. Es darf nie unklar
 // sein, ob gerade gegen Testnet oder Mainnet gearbeitet wird.
-export default function Header({ health, venues, balances, stand }: Props) {
+export default function Header({ health, venues, balances, stand, onKillSwitch }: Props) {
   const mainnet = health?.environment === "mainnet";
   const live = health?.dry_run === false;
 
@@ -60,6 +62,7 @@ export default function Header({ health, venues, balances, stand }: Props) {
             </span>
           ))}
           <span className="tabular-nums">Stand {uhrzeit(stand)}</span>
+          <KillSwitch onFertig={onKillSwitch} />
         </div>
       </div>
     </header>

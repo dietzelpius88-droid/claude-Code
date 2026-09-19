@@ -4,7 +4,13 @@ import { apr, prozent, stunden, uhrzeit, vorzeichenKlasse } from "../format";
 
 type SortKey = "net" | "symbol";
 
-export default function FundingTable({ daten }: { daten: FundingMatrix }) {
+export default function FundingTable({
+  daten,
+  onVorschau,
+}: {
+  daten: FundingMatrix;
+  onVorschau?: (symbol: string, longVenue: string, shortVenue: string) => void;
+}) {
   const [sortierung, setSortierung] = useState<SortKey>("net");
   const [filter, setFilter] = useState("");
 
@@ -62,6 +68,7 @@ export default function FundingTable({ daten }: { daten: FundingMatrix }) {
               </Th>
               <th className="px-3 py-2 text-left font-medium">Richtung</th>
               <th className="px-3 py-2 text-right font-medium">Break-even</th>
+              <th className="px-3 py-2 text-right font-medium"></th>
             </tr>
             <tr className="bg-slate-900/60 text-[10px] text-slate-500">
               <th />
@@ -71,6 +78,7 @@ export default function FundingTable({ daten }: { daten: FundingMatrix }) {
                   <th className="px-3 pb-1 text-right font-normal">APR</th>
                 </Fragment>
               ))}
+              <th />
               <th />
               <th />
               <th />
@@ -132,11 +140,22 @@ export default function FundingTable({ daten }: { daten: FundingMatrix }) {
                   ) : (
                     <span
                       className="text-slate-600"
-                      title="Gebuehren noch nicht bekannt - Extended liefert sie erst mit Account-Zugang (Phase 2)"
+                      title="Gebühren noch nicht bekannt – Extended liefert sie erst mit Account-Zugang"
                     >
                       Gebühren fehlen
                     </span>
                   )}
+                </td>
+
+                <td className="px-3 py-1.5 text-right">
+                  {z.best && onVorschau && z.best.asset_match !== false ? (
+                    <button
+                      onClick={() => onVorschau(z.symbol, z.best!.long_venue, z.best!.short_venue)}
+                      className="rounded border border-slate-700 px-2 py-0.5 text-[11px] text-slate-300 hover:border-slate-500 hover:text-slate-100"
+                    >
+                      Vorschau
+                    </button>
+                  ) : null}
                 </td>
               </tr>
             ))}

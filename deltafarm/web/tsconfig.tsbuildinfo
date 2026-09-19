@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/api.ts","./src/format.ts","./src/main.tsx","./src/components/FundingTable.tsx","./src/components/Header.tsx","./src/components/Journal.tsx","./src/components/Positions.tsx"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/api.ts","./src/format.ts","./src/main.tsx","./src/components/FundingTable.tsx","./src/components/Header.tsx","./src/components/Journal.tsx","./src/components/KillSwitch.tsx","./src/components/OpenDialog.tsx","./src/components/Positions.tsx","./src/components/UnhedgedAlarm.tsx"],"version":"5.9.3"}

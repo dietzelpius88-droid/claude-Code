@@ -126,3 +126,107 @@ export type JournalEntry = {
 export const holeBalances = () => hole<BalanceRow[]>("/api/balances");
 export const holePositionen = () => hole<DetectedPair[]>("/api/positions");
 export const holeJournal = () => hole<JournalEntry[]>("/api/journal");
+
+// --- Phase 3 --------------------------------------------------------------
+
+export type Check = {
+  key: string;
+  label: string;
+  status: "PASS" | "WARN" | "FAIL";
+  detail: string;
+};
+
+export type SizingOut = {
+  size: string;
+  lot_size: string;
+  long_venue: string;
+  short_venue: string;
+  long_mark: string;
+  short_mark: string;
+  long_notional: string;
+  short_notional: string;
+  residual_delta_usd: string;
+  residual_delta_pct: string;
+  estimated_open_fees: string | null;
+  estimated_round_trip_fees: string | null;
+};
+
+export type PreviewOut = {
+  token: string | null;
+  ok: boolean;
+  sizing: SizingOut | null;
+  checks: Check[];
+  net_rate_hourly: string | null;
+  net_apr: string | null;
+  breakeven_hours: string | null;
+  blocking_reasons: string[];
+  error: string | null;
+  valid_for_seconds: number;
+};
+
+export type ExecutionOut = {
+  pair_id: number;
+  state: string;
+  detail: string;
+  dry_run: boolean;
+};
+
+export type PairRow = {
+  id: number;
+  symbol: string;
+  long_venue: string;
+  short_venue: string;
+  status: string;
+  notional_usd: string | null;
+  opened_at: string | null;
+  closed_at: string | null;
+  legs: Array<{
+    venue: string;
+    side: string;
+    target_size: string | null;
+    filled_size: string | null;
+    avg_price: string | null;
+    status: string;
+  }>;
+};
+
+export type PanicOut = {
+  cancelled_orders: number;
+  closed_positions: number;
+  errors: string[];
+  dry_run: boolean;
+};
+
+async function sende<T>(pfad: string, koerper?: unknown): Promise<T> {
+  const antwort = await fetch(pfad, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: koerper === undefined ? undefined : JSON.stringify(koerper),
+  });
+  const daten = await antwort.json().catch(() => ({}));
+  if (!antwort.ok) {
+    throw new Error((daten as { detail?: string }).detail ?? `${antwort.status} ${antwort.statusText}`);
+  }
+  return daten as T;
+}
+
+export type PreviewEingabe = {
+  symbol: string;
+  notional_usd: string;
+  long_venue: string;
+  short_venue: string;
+  max_slippage: string;
+  long_leverage: string;
+  short_leverage: string;
+  first_venue: string;
+  hedge_timeout_seconds: number;
+  auto_rollback: boolean;
+};
+
+export const holePairs = () => hole<PairRow[]>("/api/pairs");
+export const erstelleVorschau = (e: PreviewEingabe) => sende<PreviewOut>("/api/pairs/preview", e);
+export const fuehreAus = (token: string) => sende<ExecutionOut>("/api/pairs/open", { token });
+export const schliessePaar = (id: number) => sende<ExecutionOut>(`/api/pairs/${id}/close`);
+export const loeseAuf = (id: number, action: "hedge" | "rollback") =>
+  sende<ExecutionOut>(`/api/pairs/${id}/resolve`, { action });
+export const killSwitch = () => sende<PanicOut>("/api/panic");
