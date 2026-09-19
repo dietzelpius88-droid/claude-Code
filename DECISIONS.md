@@ -411,3 +411,138 @@ damit der Account-Index, bei Extended der `X-Api-Key`-Header.
 Schlüssel im Prozess, und der Adapter kann in Phase 2 nichts auslösen, selbst
 wenn er wollte. Die Signaturbibliotheken kommen erst in Phase 3, wenn Orders
 tatsächlich gesendet werden.
+
+
+---
+
+## ADR-018 – Referenzpreis beim Sizing ist der höhere Mark-Preis
+
+**Phase:** 3 · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** Beide Börsen haben leicht verschiedene Mark-Preise. Aus einem
+USD-Betrag lässt sich die Menge über den einen oder den anderen rechnen.
+
+**Entscheidung.** Referenz ist der **höhere** der beiden Preise.
+
+**Begründung.** Damit bleibt der tatsächlich eingesetzte Betrag auf *beiden*
+Seiten unter dem, was eingegeben wurde. Über den niedrigeren Preis gerechnet
+läge die Position auf der teureren Börse darüber — und damit über der Margin,
+die dafür eingeplant war. Gerundet wird aus demselben Grund immer ab: eine zu
+große Position sprengt die Margin, eine zu kleine kostet nur etwas Ertrag.
+
+---
+
+## ADR-019 – Gemeinsames Mengenraster über das kleinste gemeinsame Vielfache
+
+**Phase:** 3 · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** Der Auftrag sagt, auf die „gröbere der beiden Lot-Sizes" zu runden.
+Das stimmt, solange beide Zehnerpotenzen sind — bei 0,02 und 0,03 wäre die
+gröbere Größe auf der anderen Börse aber ungültig.
+
+**Entscheidung.** Das Raster ist das kleinste gemeinsame Vielfache beider
+Lot-Sizes, exakt über `Fraction` gerechnet. Bei Zehnerpotenzen fällt das mit
+der gröberen Größe zusammen, im Sonderfall nicht.
+
+**Begründung.** Beide Beine müssen exakt dieselbe Menge bekommen. Eine Menge,
+die nur auf einer Börse gültig ist, macht das unmöglich.
+
+---
+
+## ADR-020 – Preflight kennt drei Zustände, nicht zwei
+
+**Phase:** 3 · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** Manche Prüfungen können mangels Daten weder bestehen noch
+scheitern — etwa der Break-even ohne bekannte Gebühren oder der Zeitversatz
+ohne Serverzeit-Endpunkt.
+
+**Entscheidung.** `PASS`, `WARN`, `FAIL`. Nur `FAIL` blockiert die Ausführung;
+`WARN` ist sichtbar, aber kein Abbruchgrund. Fehlende Daten führen **nie** zu
+einem stillschweigenden Bestehen: kein Kontostand heißt `FAIL` beim
+Margin-Check, kein Orderbuch heißt `FAIL` bei der Tiefe.
+
+**Begründung.** Wer nicht weiß, ob genug Margin da ist, weiß nicht, ob genug
+Margin da ist. Ein grüner Punkt auf Basis fehlender Daten wäre schlimmer als
+gar keine Prüfung.
+
+---
+
+## ADR-021 – Zustand vor Netzwerkaufruf, UNHEDGED nie stillschweigend
+
+**Phase:** 3 · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** Der gefährlichste Moment ist die Lücke zwischen den beiden Beinen.
+
+**Entscheidung.** Drei Regeln in der Engine:
+
+1. Jeder Zustandsübergang steht in der Datenbank, **bevor** die Order rausgeht.
+   Der Wiederanlauf beim Start gleicht hängengebliebene Paare gegen den
+   tatsächlichen Börsenzustand ab und meldet Abweichungen.
+2. `UNHEDGED` entsteht nie stillschweigend und vergeht nie stillschweigend. Er
+   wird als Fehler protokolliert und verlangt eine Entscheidung — außer der
+   Auto-Rollback ist ausdrücklich eingeschaltet.
+3. Die Gegenseite folgt der **tatsächlich gefüllten** Menge, nie der geplanten.
+
+**Besonderheit beim Timeout.** Läuft der Timer ab, ist der Zustand der Order
+**unbekannt**, nicht „nicht gefüllt". Die Börse kann sie trotzdem ausgeführt
+haben. Die Meldung sagt das ausdrücklich, damit beim Nachziehen nicht doppelt
+gehedgt wird.
+
+---
+
+## ADR-022 – Der Kill Switch darf an nichts scheitern
+
+**Phase:** 3 · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** Ein Test deckte auf, dass der Kill Switch abbrach, wenn die
+Positionsabfrage einer Börse eine unerwartete Ausnahme warf — und dass er
+ohne funktionierende Positionsabfrage gar nichts schloss.
+
+**Entscheidung.** Zwei Änderungen: Er fängt **jede** Ausnahme je Börse ab
+(überall sonst im Projekt gilt weiterhin die enge Fehlerbehandlung), und er
+zieht die zu schließenden Symbole aus **zwei** Quellen — der Positionsliste der
+Börse *und* den offenen Paaren in der Datenbank.
+
+**Begründung.** Das ist die letzte Verteidigungslinie. Sie darf nicht an einem
+Fehler hängenbleiben, den niemand vorhergesehen hat, und nicht daran, dass eine
+Abfrage gerade nicht antwortet.
+
+---
+
+## ADR-023 – Vorschauen liegen serverseitig und gelten einmal
+
+**Phase:** 3 · **Status:** angenommen · **Datum:** 2026-09-19
+
+**Kontext.** `POST /api/pairs/open` darf nur eine frische Vorschau annehmen.
+
+**Entscheidung.** Vorschauen liegen serverseitig; der Token ist zufällig, nicht
+aus den Daten abgeleitet. Vor der Ausführung wird geprüft: Alter (Standard
+15 s), Preisbewegung (Standard 0,2 %), Vorzeichen des Fundings je Börse und das
+Netto-Funding. Danach ist der Token verbraucht.
+
+**Begründung.** Ein zufälliger Token lässt sich nicht durch Nachbauen derselben
+Eingaben wiederbeleben. Der Einmalgebrauch verhindert, dass ein zweiter Klick
+eine zweite Position eröffnet. Die Prüfung, ob der Preflight überhaupt bestanden
+wurde, läuft **vor** der Bewegungsprüfung — sonst bekäme man bei einer nie
+freigegebenen Vorschau eine Meldung über Marktbewegung und suchte den Fehler an
+der falschen Stelle.
+
+---
+
+## ADR-024 – Der Zeitversatz bleibt vorerst unbekannt
+
+**Phase:** 3 · **Status:** angenommen, mit offenem Punkt · **Datum:** 2026-09-19
+
+**Kontext.** Preflight-Prüfung 1 verlangt einen Zeitversatz unter einer
+Schwelle. Weder das Extended- noch das Lighter-SDK dokumentiert einen Endpunkt
+für die Serverzeit. (edgeX und Aster hätten einen — dort heißt er
+`getServerTime` bzw. steckt im Nonce-Fenster von 10 Sekunden.)
+
+**Entscheidung.** Der Zeitversatz wird als unbekannt geführt und erzeugt eine
+Warnung, kein stilles Bestehen. Siehe `RESEARCH.md`, OFFEN-17.
+
+**Begründung.** Eine erfundene Null wäre gefährlicher als eine sichtbare
+Wissenslücke. Ein möglicher Weg für Phase 4 ist der `Date`-Header der
+HTTP-Antwort; das ist ungenau, aber besser als nichts — und muss gegen die
+echte API geprüft werden, bevor es als Prüfung zählt.

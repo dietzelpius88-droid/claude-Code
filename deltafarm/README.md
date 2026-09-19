@@ -4,9 +4,10 @@ Lokales Dashboard für delta-neutrales Funding-Farming über zwei Perp-DEX hinwe
 Gleiche Größe long auf der einen, short auf der anderen Börse; verdient wird an
 der Funding-Differenz.
 
-**Stand: Phase 2.** Marktdaten, Kontostände, Positionen und Journal.
-Es wird keine Order gesendet — die Handelsmethoden der Adapter werfen bewusst
-einen Fehler. Börsen: **Extended** und **Lighter**.
+**Stand: Phase 3.** Marktdaten, Konten, Journal — und Ausführung im
+**Trockenlauf**. Der komplette Orderpfad läuft durch, inklusive Prüfung gegen
+die Regeln der Börse, aber es geht nichts raus: jede Order wird nur geloggt.
+Börsen: **Extended** und **Lighter**.
 
 ## Schnellstart
 
@@ -39,6 +40,12 @@ Mark-Preis, PnL, Rest-Delta in USD und Prozent, erhaltenem Funding, Haltedauer
 und einem Balken je Bein für den Abstand zur Liquidation. Ein Symbol mit nur
 einem offenen Bein wird deutlich als **NICHT GEHEDGT** markiert — das ist eine
 ungesicherte Richtungswette, keine delta-neutrale Position.
+
+**Paar eröffnen** (Dialog aus der Vergleichstabelle): Notional, maximaler
+Slippage, Hebel je Seite und welches Bein zuerst ausgeführt wird. Darunter die
+Preflight-Checkliste mit grünen, gelben und roten Punkten, die gerundeten Größen
+je Börse, das Rest-Delta, die geschätzten Gebühren und die Mindesthaltedauer bis
+zum Break-even. Der Ausführen-Knopf bleibt gesperrt, solange eine Prüfung rot ist.
 
 **Journal** (eigener Tab): jede Aktion und jede Funding-Zahlung chronologisch,
 filterbar, mit CSV-Export.
@@ -78,6 +85,9 @@ den privaten API-Key in die `.env` eintragen.
 | `DELTAFARM_ENVIRONMENT` | `testnet` | `testnet` oder `mainnet` |
 | `DELTAFARM_PORT` | `8787` | Port des Backends, immer auf 127.0.0.1 |
 | `DELTAFARM_POLL_SECONDS` | `20` | Takt der Hintergrundaktualisierung |
+| `DELTAFARM_PREVIEW_MAX_AGE` | `15` | Sekunden, die eine Vorschau gültig bleibt |
+| `DELTAFARM_MARGIN_SHARE` | `0.5` | Anteil der freien Margin, den eine Position belegen darf |
+| `DELTAFARM_HEDGE_TIMEOUT` | `10` | Sekunden, bis ein halb gefülltes Paar als ungesichert gilt |
 | `EXTENDED_RATE_PER_SECOND` | `5.0` | Rate Limit, bewusst konservativ |
 | `LIGHTER_RATE_PER_SECOND` | `5.0` | Rate Limit, bewusst konservativ |
 
@@ -143,7 +153,47 @@ GET /api/opportunities         Paare nach Netto-APR sortiert, mit Break-even
 GET /api/balances              Kontostände je Börse
 GET /api/positions             offene Positionen, zu Paaren gruppiert
 GET /api/journal?format=csv    Journal als JSON oder CSV
+
+POST /api/pairs/preview        Sizing und Preflight, ohne Order
+POST /api/pairs/open           führt eine gültige Vorschau aus
+GET  /api/pairs                offene und geschlossene Paare
+POST /api/pairs/{id}/close     Paar beidseitig schließen
+POST /api/pairs/{id}/resolve   UNHEDGED auflösen: hedge | rollback
+POST /api/panic                Kill Switch
 ```
+
+## Ausführung und ihre Absicherungen
+
+**Trockenlauf.** `DELTAFARM_DRY_RUN=true` ist Standard. Der Orderpfad läuft
+vollständig durch — Größe gegen Lot-Size und Mindestnotional geprüft, Gebühr
+geschätzt, alles protokolliert —, aber nichts wird gesendet. Steht die Variable
+auf `false`, sagt der Adapter ausdrücklich, dass Live-Orders noch nicht
+freigeschaltet sind (Phase 4), statt stillschweigend nichts zu tun.
+
+**Vorschau mit Verfallsdatum.** `POST /api/pairs/open` nimmt nur einen Token an,
+der jünger als 15 Sekunden ist und dessen Grundlage sich seither nicht bewegt
+hat: Preis höchstens 0,2 %, Funding-Vorzeichen unverändert, Netto-Funding noch
+positiv. Danach ist der Token verbraucht — ein zweiter Klick eröffnet keine
+zweite Position. Ein alter Browser-Tab kann damit keine Order auslösen.
+
+**Der gefährliche Zustand.** Ist ein Bein gefüllt und das andere nicht, geht das
+Paar in `UNHEDGED`. Die Oberfläche zeigt dann einen nicht wegklickbaren Alarm mit
+zwei Auswegen: Gegenseite nachziehen oder erstes Bein schließen. Ohne
+Entscheidung passiert nichts — außer `auto_rollback` ist ausdrücklich
+eingeschaltet.
+
+Läuft der Timer ab (Standard 10 s), ist der Zustand der zweiten Order
+**unbekannt**, nicht „nicht gefüllt": die Börse kann sie trotzdem ausgeführt
+haben. Die Meldung sagt das, damit beim Nachziehen nicht doppelt gehedgt wird.
+
+**Wiederanlauf.** Jeder Zustandsübergang steht in der Datenbank, bevor die Order
+rausgeht. Beim Start gleicht die Anwendung hängengebliebene Paare gegen den
+tatsächlichen Börsenzustand ab und meldet Abweichungen.
+
+**Kill Switch.** Ein Knopf in der Kopfzeile, eine einzige Rückfrage, dann werden
+alle offenen Orders storniert und alle Positionen geschlossen. Er zieht die
+Symbole aus zwei Quellen — der Positionsliste der Börse und den offenen Paaren
+in der Datenbank — und fängt jede Ausnahme ab. Er darf an nichts scheitern.
 
 ## Datenbank
 
