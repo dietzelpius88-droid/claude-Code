@@ -142,3 +142,89 @@ class JournalEntryOut(BaseModel):
     amount: Optional[Decimal] = None
     confirmed: Optional[bool] = None
     message: str = ""
+
+
+# --- Phase 3: Vorschau und Ausfuehrung ------------------------------------
+
+
+class PreviewRequestIn(BaseModel):
+    symbol: str
+    notional_usd: Decimal
+    long_venue: str
+    short_venue: str
+    max_slippage: Decimal = Decimal("0.002")
+    long_leverage: Decimal = Decimal(1)
+    short_leverage: Decimal = Decimal(1)
+    first_venue: Optional[str] = None
+    hedge_timeout_seconds: float = 10.0
+    auto_rollback: bool = False
+
+
+class CheckOut(BaseModel):
+    key: str
+    label: str
+    status: str
+    detail: str = ""
+
+
+class SizingOut(BaseModel):
+    size: Decimal
+    lot_size: Decimal
+    long_venue: str
+    short_venue: str
+    long_mark: Decimal
+    short_mark: Decimal
+    long_notional: Decimal
+    short_notional: Decimal
+    residual_delta_usd: Decimal
+    residual_delta_pct: Decimal
+    estimated_open_fees: Optional[Decimal] = None
+    estimated_round_trip_fees: Optional[Decimal] = None
+
+
+class PreviewOut(BaseModel):
+    token: Optional[str] = None
+    ok: bool
+    sizing: Optional[SizingOut] = None
+    checks: list[CheckOut] = []
+    net_rate_hourly: Optional[Decimal] = None
+    net_apr: Optional[Decimal] = None
+    breakeven_hours: Optional[Decimal] = None
+    blocking_reasons: list[str] = []
+    error: Optional[str] = None
+    # Wie lange die Vorschau gueltig bleibt.
+    valid_for_seconds: float = 15.0
+
+
+class OpenRequestIn(BaseModel):
+    token: str
+
+
+class ResolveRequestIn(BaseModel):
+    action: str  # hedge | rollback
+
+
+class ExecutionOut(BaseModel):
+    pair_id: int
+    state: str
+    detail: str = ""
+    dry_run: bool = True
+
+
+class PairOut(BaseModel):
+    id: int
+    symbol: str
+    long_venue: str
+    short_venue: str
+    status: str
+    notional_usd: Optional[Decimal] = None
+    opened_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+    legs: list[dict] = []
+
+
+class PanicOut(BaseModel):
+    cancelled_orders: int
+    closed_positions: int
+    errors: list[str] = []
+    dry_run: bool = True

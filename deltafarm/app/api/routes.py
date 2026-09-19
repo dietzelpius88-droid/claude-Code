@@ -10,6 +10,15 @@ from fastapi.responses import PlainTextResponse
 
 from app.api.schemas import (
     BalanceOut,
+    CheckOut,
+    ExecutionOut,
+    OpenRequestIn,
+    PairOut,
+    PanicOut,
+    PreviewOut,
+    PreviewRequestIn,
+    ResolveRequestIn,
+    SizingOut,
     BestPairOut,
     DetectedPairOut,
     HealthOutModel,
@@ -26,7 +35,9 @@ from app.api.schemas import (
 from app.config import get_settings
 from app.core import symbols as sym
 from app.core.account import AccountService
+from app.core.preview import PreviewError
 from app.core.service import MarketDataService, Snapshot
+from app.core.trading import PreviewRequest, TradingService
 from app.models.domain import VenueStatus
 
 router = APIRouter(prefix="/api")
@@ -348,3 +359,173 @@ async def journal(
     ]
     eintraege.sort(key=lambda e: e.timestamp)
     return eintraege
+
+
+# --- Phase 3: Vorschau, Ausfuehrung, Kill Switch -------------------------
+
+
+def _trading(request: Request) -> TradingService:
+    dienst = getattr(request.app.state, "trading", None)
+    if dienst is None:  # pragma: no cover
+        raise HTTPException(status_code=503, detail="Handelsdienst nicht bereit.")
+    return dienst
+
+
+def _engine(request: Request):
+    motor = getattr(request.app.state, "engine", None)
+    if motor is None:  # pragma: no cover
+        raise HTTPException(status_code=503, detail="Ausfuehrungsengine nicht bereit.")
+    return motor
+
+
+def _store(request: Request):
+    speicher = getattr(request.app.state, "pairs", None)
+    if speicher is None:  # pragma: no cover
+        raise HTTPException(status_code=503, detail="Paarspeicher nicht bereit.")
+    return speicher
+
+
+@router.post("/pairs/preview", response_model=PreviewOut)
+async def pairs_preview(request: Request, body: PreviewRequestIn) -> PreviewOut:
+    """Sizing und Preflight, ohne dass etwas gesendet wird."""
+    dienst = _trading(request)
+    antwort = await dienst.preview(
+        PreviewRequest(
+            symbol=body.symbol,
+            notional_usd=body.notional_usd,
+            long_venue=body.long_venue,
+            short_venue=body.short_venue,
+            max_slippage=body.max_slippage,
+            long_leverage=body.long_leverage,
+            short_leverage=body.short_leverage,
+            first_venue=body.first_venue,
+            hedge_timeout_seconds=body.hedge_timeout_seconds,
+            auto_rollback=body.auto_rollback,
+        )
+    )
+
+    if antwort.error is not None or antwort.sizing is None or antwort.preflight is None:
+        return PreviewOut(token=None, ok=False, error=antwort.error or "Vorschau nicht moeglich")
+
+    s = antwort.sizing
+    p = antwort.preflight
+    return PreviewOut(
+        token=antwort.token,
+        ok=p.ok,
+        sizing=SizingOut(
+            size=s.size,
+            lot_size=s.lot_size,
+            long_venue=s.long_venue,
+            short_venue=s.short_venue,
+            long_mark=s.long_mark,
+            short_mark=s.short_mark,
+            long_notional=s.long_notional,
+            short_notional=s.short_notional,
+            residual_delta_usd=s.residual_delta_usd,
+            residual_delta_pct=s.residual_delta_pct,
+            estimated_open_fees=s.estimated_open_fees,
+            estimated_round_trip_fees=s.estimated_round_trip_fees,
+        ),
+        checks=[
+            CheckOut(key=c.key, label=c.label, status=c.status.value, detail=c.detail)
+            for c in p.checks
+        ],
+        net_rate_hourly=p.net_rate_hourly,
+        net_apr=p.net_apr,
+        breakeven_hours=p.breakeven_hours,
+        blocking_reasons=p.blocking_reasons,
+        valid_for_seconds=request.app.state.previews.max_age_seconds,
+    )
+
+
+@router.post("/pairs/open", response_model=ExecutionOut)
+async def pairs_open(request: Request, body: OpenRequestIn) -> ExecutionOut:
+    """Fuehrt eine Vorschau aus - nur, wenn sie noch gueltig ist."""
+    try:
+        ergebnis = await _trading(request).open_from_token(body.token)
+    except PreviewError as exc:
+        # 409: die Vorschau ist nicht mehr gueltig, der Zustand hat sich bewegt.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ExecutionOut(
+        pair_id=ergebnis.pair_id,
+        state=ergebnis.state.value,
+        detail=ergebnis.detail,
+        dry_run=get_settings().dry_run,
+    )
+
+
+@router.get("/pairs", response_model=list[PairOut])
+async def pairs(request: Request) -> list[PairOut]:
+    speicher = _store(request)
+    ergebnis: list[PairOut] = []
+    for paar in speicher.all_pairs():
+        ergebnis.append(
+            PairOut(
+                id=paar.id,
+                symbol=paar.symbol,
+                long_venue=paar.long_venue,
+                short_venue=paar.short_venue,
+                status=paar.status,
+                notional_usd=paar.notional_usd,
+                opened_at=paar.opened_at,
+                closed_at=paar.closed_at,
+                legs=[
+                    {
+                        "venue": b.venue,
+                        "side": b.side,
+                        "target_size": str(b.target_size) if b.target_size is not None else None,
+                        "filled_size": str(b.filled_size) if b.filled_size is not None else None,
+                        "avg_price": str(b.avg_price) if b.avg_price is not None else None,
+                        "status": b.status,
+                    }
+                    for b in speicher.legs(paar.id)
+                ],
+            )
+        )
+    return ergebnis
+
+
+@router.post("/pairs/{pair_id}/close", response_model=ExecutionOut)
+async def pairs_close(request: Request, pair_id: int) -> ExecutionOut:
+    try:
+        ergebnis = await _engine(request).close_pair(pair_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ExecutionOut(
+        pair_id=ergebnis.pair_id,
+        state=ergebnis.state.value,
+        detail=ergebnis.detail,
+        dry_run=get_settings().dry_run,
+    )
+
+
+@router.post("/pairs/{pair_id}/resolve", response_model=ExecutionOut)
+async def pairs_resolve(request: Request, pair_id: int, body: ResolveRequestIn) -> ExecutionOut:
+    """Loest einen UNHEDGED-Zustand auf: Gegenseite nachziehen oder zurueckrollen."""
+    try:
+        ergebnis = await _engine(request).resolve_unhedged(pair_id, action=body.action)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return ExecutionOut(
+        pair_id=ergebnis.pair_id,
+        state=ergebnis.state.value,
+        detail=ergebnis.detail,
+        dry_run=get_settings().dry_run,
+    )
+
+
+@router.post("/panic", response_model=PanicOut)
+async def panic(request: Request) -> PanicOut:
+    """Kill Switch: alles stornieren, alles schliessen."""
+    ergebnis = await _engine(request).panic()
+    return PanicOut(
+        cancelled_orders=ergebnis.cancelled_orders,
+        closed_positions=ergebnis.closed_positions,
+        errors=ergebnis.errors,
+        dry_run=get_settings().dry_run,
+    )

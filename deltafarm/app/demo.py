@@ -124,6 +124,9 @@ def build_demo_app():
     adapters = [
         DemoKonto(
             "extended",
+            supports_trading=True,
+            lot_size=Decimal("0.001"),
+            min_notional=Decimal(10),
             rates=EXTENDED_RATEN,
             mark_prices=MARKEN,
             # Extended liefert Gebuehren erst mit Account-Zugang (ADR-005) -
@@ -134,6 +137,9 @@ def build_demo_app():
         ),
         DemoKonto(
             "lighter",
+            supports_trading=True,
+            lot_size=Decimal("0.001"),
+            min_notional=Decimal(10),
             rates=LIGHTER_RATEN,
             mark_prices=MARKEN,
             convention=RateConvention.ANNUALIZED_PERCENT,

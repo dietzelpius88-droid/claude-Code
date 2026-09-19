@@ -17,9 +17,13 @@ from app.api.routes import router
 from app.config import Settings, get_settings
 from app.core import symbols as sym
 from app.core.account import AccountService
+from app.core.execution import ExecutionEngine
+from app.core.preview import PreviewStore
 from app.core.service import MarketDataService
+from app.core.trading import TradingService
 from app.storage.db import create_all, make_engine, make_session_factory
 from app.storage.journal import Journal
+from app.storage.pairs import PairStore
 
 LOG = structlog.get_logger(__name__)
 
@@ -37,12 +41,14 @@ def build_adapters(settings: Settings) -> list:
             rate_per_second=settings.extended_rate_per_second,
             burst=settings.extended_burst,
             api_key=api_key,
+            dry_run=settings.dry_run,
         ),
         LighterAdapter(
             base_url=settings.lighter_rest_url,
             rate_per_second=settings.lighter_rate_per_second,
             burst=settings.lighter_burst,
             account_index=settings.lighter_account_index,
+            dry_run=settings.dry_run,
         ),
     ]
 
@@ -95,6 +101,24 @@ async def background_worker(app: FastAPI, interval_seconds: int) -> None:
     except Exception as exc:
         LOG.error("startpruefung_fehlgeschlagen", fehler=str(exc))
 
+    # Wiederanlauf: haengengebliebene Paare gegen den Boersenzustand halten.
+    motor = getattr(app.state, "engine", None)
+    if motor is not None:
+        try:
+            for bericht in await motor.recover():
+                LOG.error(
+                    "wiederanlauf",
+                    pair_id=bericht.pair_id,
+                    symbol=bericht.symbol,
+                    zustand=bericht.state.value,
+                    abweichung=bericht.discrepancy,
+                    detail=bericht.detail,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOG.error("wiederanlauf_fehlgeschlagen", fehler=str(exc))
+
     while True:
         try:
             snapshot = await dienst.refresh(symbole)
@@ -107,6 +131,11 @@ async def background_worker(app: FastAPI, interval_seconds: int) -> None:
                 ergebnis = await konto.sync()
                 if ergebnis["funding_neu"]:
                     LOG.info("funding_nachgeladen", **ergebnis)
+
+            # Abgelaufene Vorschauen entfernen.
+            vorschauen = getattr(app.state, "previews", None)
+            if vorschauen is not None:
+                vorschauen.purge()
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # der Hintergrundlauf darf nie sterben
@@ -134,6 +163,25 @@ def create_app(
 
         app.state.service = MarketDataService(verwendete, environment=s.environment.value)
         app.state.account = AccountService(verwendete, journal=app.state.journal)
+
+        # Ausfuehrung (Phase 3). Im Trockenlauf laufen alle Pfade durch, es
+        # geht aber nichts an die Boersen.
+        nach_name = {getattr(a, "name", f"adapter{i}"): a for i, a in enumerate(verwendete)}
+        app.state.pairs = PairStore(make_session_factory(engine))
+        app.state.engine = ExecutionEngine(
+            adapters=nach_name,
+            store=app.state.pairs,
+            journal=app.state.journal,
+            dry_run=s.dry_run,
+        )
+        app.state.previews = PreviewStore(max_age_seconds=s.preview_max_age_seconds)
+        app.state.trading = TradingService(
+            adapters=nach_name,
+            engine=app.state.engine,
+            previews=app.state.previews,
+            journal=app.state.journal,
+            margin_share=s.margin_share,
+        )
 
         app.state.journal.record_event(
             kind="start",

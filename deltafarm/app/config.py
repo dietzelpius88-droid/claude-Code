@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from enum import StrEnum
 from typing import Optional
 
@@ -64,6 +65,16 @@ class Settings(BaseSettings):
 
     # --- Aktualisierung ---
     poll_seconds: int = Field(default=20, alias="DELTAFARM_POLL_SECONDS")
+
+    # --- Ausfuehrung (Phase 3) ---
+    # Wie lange eine Vorschau als Grundlage einer Order taugt. Bewusst kurz:
+    # ein alter Browser-Tab soll keine Order ausloesen koennen.
+    preview_max_age_seconds: float = Field(default=15.0, alias="DELTAFARM_PREVIEW_MAX_AGE")
+    # Anteil der freien Margin, den eine Position hoechstens belegen darf.
+    margin_share: Decimal = Field(default=Decimal("0.5"), alias="DELTAFARM_MARGIN_SHARE")
+    # Wie lange nach der ersten Fuellung auf das zweite Bein gewartet wird,
+    # bevor das Paar als UNGESICHERT gilt.
+    hedge_timeout_seconds: float = Field(default=10.0, alias="DELTAFARM_HEDGE_TIMEOUT")
 
     # --- Schluessel (ab Phase 2) ---
     extended_api_key: Optional[SecretStr] = Field(default=None, alias="EXTENDED_API_KEY")
